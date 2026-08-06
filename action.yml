@@ -353,7 +353,7 @@ runs:
         shell: bash
         run: |
           echo "${{steps.send-message.outputs.error-message}}"
-          if ${{ steps.send-message.outputs.message-status == '204' }}
+          if ${{ steps.send-message.outputs.message-status == '204' || steps.send-message.outputs.message-status == '200' }}
           then 
             echo "Message sent to Cliq Successfully"
             exit 0
