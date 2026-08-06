@@ -18,10 +18,11 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 public class GitHub_Informer_New {
 	public static void main(String args[]) {
 		System.out.println("Calling Cliq...");
-		HttpURLConnection connection;
 		Integer MAX_MESSAGE_LENGTH = 4096;
 		String MESSAGE_BREAK = "\\n";
 		Integer status = 400;
@@ -53,7 +54,8 @@ public class GitHub_Informer_New {
 			for(String s: EventWords)
 			  Event += s.substring(0,1).toUpperCase() + s.substring(1) + " ";
 			Event = Event.trim();
-			String Action = (String) System.getenv("ACTION");
+			String ActionRaw = (String) System.getenv("ACTION");
+			String Action = ActionRaw;
 			if(Action != null && !Action.isBlank())
 			{
 			  String[] ActionWords = Action.split("_");
@@ -743,38 +745,56 @@ public class GitHub_Informer_New {
 				  }
 				  messages.add(split_message);
 				}
+
+				String eventNameRaw = (String) System.getenv("GITHUB_EVENT_NAME");
+				boolean isPrEvent = "pull_request".equals(eventNameRaw) || "pull_request_target".equals(eventNameRaw);
+				String prNumber = (String) System.getenv("PULL_REQUEST_NUMBER");
+				String githubToken = (String) System.getenv("GITHUB_TOKEN");
+				String prThreadId = null;
+				if(isPrEvent && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
+				{
+				  prThreadId = fetchCliqThreadIdFromPRComments(Repository, prNumber, githubToken);
+				}
+				String createdThreadId = null;
+
 				for(String msg : messages)
 				{
 				  msg = msg.replace("\"","'");
-				  String TextParams = "{\n\"text\":\"" + msg + "\",\n\"bot\":\n{\n\"name\":\"GitHub Informer for Zoho Cliq\",\n\"image\":\"" + GitHubInformerURL + "\"}}";
-				  connection = (HttpURLConnection) new URL(CliqChannelLink).openConnection();
-				  connection.setRequestMethod("POST");
-				  connection.setRequestProperty("Content-Type","application/json");
-				  connection.setDoOutput(true);
-				  OutputStream os = connection.getOutputStream();
-				  os.write(TextParams.getBytes());
-				  os.flush();
-				  os.close();
-				  status = connection.getResponseCode();
-				  if(status > 299) {
-					  BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getErrorStream()));
-					  String line;
-					  while((line = reader.readLine()) != null) {
-						  responseContent.append(line);
-					  }
-				    reader.close();
-				  }
-				  else
+				  String TextParams = buildCliqPayload(msg, GitHubInformerURL, prThreadId);
+				  HttpResult cliqResult = postJson(CliqChannelLink, TextParams);
+				  status = cliqResult.status;
+				  String localResponse = cliqResult.body;
+				  responseContent.append(localResponse);
+
+				  // Fallback: if threaded post fails, retry as normal channel message.
+				  if(status > 299 && prThreadId != null)
 				  {
-					  BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-					  String line;
-					  while((line = reader.readLine()) != null) {
-						  responseContent.append(line);
-					  }
-					  reader.close();
+					HttpResult fallbackResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, null));
+					status = fallbackResult.status;
+					localResponse = fallbackResult.body;
+					responseContent.append(localResponse);
 				  }
+
+				  if(isPrEvent && "opened".equals(ActionRaw) && (createdThreadId == null || createdThreadId.isBlank()))
+				  {
+					String extractedId = extractCliqMessageId(localResponse);
+					if(extractedId != null && !extractedId.isBlank())
+					{
+					  createdThreadId = extractedId;
+					}
+				  }
+
 				  if(status != 204)
 				    ERROR_MESSAGE = responseContent.toString();
+				}
+
+				if(isPrEvent && "opened".equals(ActionRaw) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
+				{
+				  upsertCliqThreadIdComment(Repository, prNumber, githubToken, createdThreadId);
+				}
+				else if(isPrEvent && "opened".equals(ActionRaw) && (createdThreadId == null || createdThreadId.isBlank()))
+				{
+				  System.err.println("PR thread marker not saved: Cliq response did not return a message/thread id.");
 				}
 			}
 			var githubOutput = (String) System.getenv("GITHUB_OUTPUT");
@@ -787,7 +807,7 @@ public class GitHub_Informer_New {
 			else if(GITHUB_ERROR)
 			  ERROR_MESSAGE = "Environmental Variable GITHUB_OUTPUT missing";
 			else if(MESSAGE_SEND_FAILURE_ERROR)
-			  ERROR_MESSAGE = ERROR_MESSAGE;
+			  ERROR_MESSAGE = responseContent.toString().isBlank() ? ERROR_MESSAGE : responseContent.toString();
 			else if(status == 204)
 			  ERROR_MESSAGE = "GitHub Informer executed Successfully";
 			writeGithubOutput(status,ERROR_MESSAGE);
@@ -894,4 +914,136 @@ public class GitHub_Informer_New {
         }
         return Array;
     }
+
+	public static class HttpResult
+	{
+		public int status;
+		public String body;
+
+		public HttpResult(int status, String body)
+		{
+			this.status = status;
+			this.body = body == null ? "" : body;
+		}
+	}
+
+	public static HttpResult postJson(String endpoint, String payload) throws IOException
+	{
+		HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
+		connection.setRequestMethod("POST");
+		connection.setRequestProperty("Content-Type", "application/json");
+		connection.setDoOutput(true);
+		try (OutputStream os = connection.getOutputStream())
+		{
+			os.write(payload.getBytes(UTF_8));
+			os.flush();
+		}
+		int status = connection.getResponseCode();
+		String body = readConnectionBody(connection, status > 299);
+		return new HttpResult(status, body);
+	}
+
+	public static String readConnectionBody(HttpURLConnection connection, boolean errorStream) throws IOException
+	{
+		if(errorStream && connection.getErrorStream() == null)
+			return "";
+		if(!errorStream && connection.getInputStream() == null)
+			return "";
+		StringBuilder response = new StringBuilder();
+		try (BufferedReader reader = new BufferedReader(new InputStreamReader(errorStream ? connection.getErrorStream() : connection.getInputStream())))
+		{
+			String line;
+			while((line = reader.readLine()) != null)
+			{
+				response.append(line);
+			}
+		}
+		return response.toString();
+	}
+
+	public static String buildCliqPayload(String message, String imageUrl, String replyToId)
+	{
+		StringBuilder payload = new StringBuilder();
+		payload.append("{\n\"text\":\"").append(jsonEscape(message)).append("\",");
+		if(replyToId != null && !replyToId.isBlank())
+		{
+			payload.append("\n\"reply_to\":\"").append(jsonEscape(replyToId)).append("\",");
+		}
+		payload.append("\n\"bot\":\n{\n\"name\":\"GitHub Informer for Zoho Cliq\",\n\"image\":\"").append(jsonEscape(imageUrl)).append("\"}}\n");
+		return payload.toString();
+	}
+
+	public static String jsonEscape(String raw)
+	{
+		if(raw == null)
+			return "";
+		return raw.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "");
+	}
+
+	public static String extractCliqMessageId(String response)
+	{
+		if(response == null || response.isBlank())
+			return null;
+		String[] keys = new String[] {"thread_id", "threadId", "message_id", "messageId", "id"};
+		for(String key : keys)
+		{
+			Pattern p = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"([^\"]+)\"");
+			Matcher m = p.matcher(response);
+			if(m.find())
+				return m.group(1);
+		}
+		return null;
+	}
+
+	public static String fetchCliqThreadIdFromPRComments(String repository, String prNumber, String githubToken)
+	{
+		try
+		{
+			String url = "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments?per_page=100";
+			HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+			connection.setRequestMethod("GET");
+			connection.setRequestProperty("Accept", "application/vnd.github+json");
+			connection.setRequestProperty("Authorization", "Bearer " + githubToken);
+			int status = connection.getResponseCode();
+			String body = readConnectionBody(connection, status > 299);
+			if(status > 299 || body == null || body.isBlank())
+				return null;
+
+			Pattern markerPattern = Pattern.compile("cliq-thread-id:([^\\s<]+)");
+			Matcher markerMatcher = markerPattern.matcher(body);
+			if(markerMatcher.find())
+				return markerMatcher.group(1);
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to fetch PR thread marker: " + e.getMessage());
+		}
+		return null;
+	}
+
+	public static void upsertCliqThreadIdComment(String repository, String prNumber, String githubToken, String threadId)
+	{
+		try
+		{
+			String url = "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments";
+			String bodyText = "<!-- cliq-thread-id:" + threadId + " -->\\nCliq thread marker for GitHub Informer.";
+			String payload = "{\"body\":\"" + jsonEscape(bodyText) + "\"}";
+			HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+			connection.setRequestMethod("POST");
+			connection.setRequestProperty("Accept", "application/vnd.github+json");
+			connection.setRequestProperty("Authorization", "Bearer " + githubToken);
+			connection.setRequestProperty("Content-Type", "application/json");
+			connection.setDoOutput(true);
+			try (OutputStream os = connection.getOutputStream())
+			{
+				os.write(payload.getBytes(UTF_8));
+				os.flush();
+			}
+			connection.getResponseCode();
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to save PR thread marker: " + e.getMessage());
+		}
+	}
 }
