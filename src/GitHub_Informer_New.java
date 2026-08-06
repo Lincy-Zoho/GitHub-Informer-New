@@ -18,7 +18,7 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.Objects;
-public class GitHub_Informer {
+public class GitHub_Informer_New {
 	public static void main(String args[]) {
 		System.out.println("Calling Cliq...");
 		HttpURLConnection connection;
@@ -34,6 +34,11 @@ public class GitHub_Informer {
 			String message;
 			String CustomMessage;
 			String ServerURL = "https://www.github.com/";
+			if(args == null || args.length == 0 || args[0] == null || args[0].isBlank())
+			{
+				ERROR_MESSAGE = "Invalid Endpoint. Input 'channel-endpoint' is missing or empty.";
+				return;
+			}
 			String CliqChannelLink = args[0];
 			if(CliqChannelLink.contains("message") && CliqChannelLink.contains("https://cliq.zoho") && CliqChannelLink.contains("/api/v2/") && CliqChannelLink.contains("?zapikey="))
 			  INVALID_ENDPOINT_ERROR = false;
@@ -49,7 +54,7 @@ public class GitHub_Informer {
 			  Event += s.substring(0,1).toUpperCase() + s.substring(1) + " ";
 			Event = Event.trim();
 			String Action = (String) System.getenv("ACTION");
-			if(!Action.equals("") || Action != null)
+			if(Action != null && !Action.isBlank())
 			{
 			  String[] ActionWords = Action.split("_");
 			  Action = new String();
@@ -787,8 +792,13 @@ public class GitHub_Informer {
 			  ERROR_MESSAGE = "GitHub Informer executed Successfully";
 			writeGithubOutput(status,ERROR_MESSAGE);
 		}  catch (MalformedURLException e) {
+			ERROR_MESSAGE = "Invalid Endpoint URL. Please provide channel-endpoint as <Cliq Channel API Endpoint>?zapikey=<Cliq Webhook Token>";
 			e.printStackTrace();
 		} catch (IOException e) {
+			ERROR_MESSAGE = "I/O Error while sending message to Cliq: " + e.getMessage();
+			e.printStackTrace();
+		} catch (Exception e) {
+			ERROR_MESSAGE = "Runtime Error: " + e.getClass().getSimpleName() + " - " + e.getMessage();
 			e.printStackTrace();
 		}
 		finally
@@ -796,11 +806,19 @@ public class GitHub_Informer {
 		  try
 		  {
 		    var githubOutput = (String) System.getenv("GITHUB_OUTPUT");
+		    if(githubOutput == null || githubOutput.isBlank())
+		    {
+		      System.err.println("GITHUB_OUTPUT is missing. Last error: " + ERROR_MESSAGE);
+		      System.exit(1);
+		    }
 		    var file = Path.of(githubOutput);
 		    if(file.getParent() != null) Files.createDirectories(file.getParent());
 		    if(MESSAGE_SEND_FAILURE_ERROR)
 		    {
-		      ERROR_MESSAGE = "Unknown Error Occured : " + ERROR_MESSAGE;
+		      if(ERROR_MESSAGE == null || ERROR_MESSAGE.isBlank() || ERROR_MESSAGE.equals("Multiple Errors Occured"))
+		      {
+		        ERROR_MESSAGE = "Unknown Error Occured : Multiple Errors Occured";
+		      }
 		    }
 		    writeGithubOutput(status,ERROR_MESSAGE);
 		  }
