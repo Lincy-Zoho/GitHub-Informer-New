@@ -8,6 +8,7 @@ import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.net.URLDecoder;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.StandardOpenOption.APPEND;
 import static java.nio.file.StandardOpenOption.CREATE;
@@ -981,10 +982,34 @@ public class GitHub_Informer_New {
 		payload.append("\n\"sync_message\":true,");
 		if(replyToId != null && !replyToId.isBlank())
 		{
-			payload.append("\n\"reply_to\":\"").append(jsonEscape(replyToId)).append("\",");
+			String normalizedReplyToId = normalizeCliqReplyToId(replyToId);
+			payload.append("\n\"reply_to\":\"").append(jsonEscape(normalizedReplyToId)).append("\",");
 		}
 		payload.append("\n\"bot\":\n{\n\"name\":\"GitHub Informer for Zoho Cliq\",\n\"image\":\"").append(jsonEscape(imageUrl)).append("\"}}\n");
 		return payload.toString();
+	}
+
+	public static String normalizeCliqReplyToId(String rawReplyToId)
+	{
+		if(rawReplyToId == null)
+			return "";
+		String trimmed = rawReplyToId.trim();
+		if(trimmed.isBlank())
+			return "";
+		try
+		{
+			String decoded = URLDecoder.decode(trimmed, UTF_8);
+			if(decoded != null && !decoded.isBlank())
+			{
+				debug("Normalized reply_to id for threaded post.");
+				return decoded;
+			}
+		}
+		catch(Exception e)
+		{
+			debug("Unable to decode reply_to id, using raw value.");
+		}
+		return trimmed;
 	}
 
 	public static String jsonEscape(String raw)
