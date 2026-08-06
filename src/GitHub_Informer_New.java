@@ -768,13 +768,13 @@ public class GitHub_Informer_New {
 				  boolean postedInThread = false;
 				  if(prThreadId != null && !prThreadId.isBlank())
 				  {
-					ArrayList<String> replyToCandidates = buildReplyToCandidates(prThreadId);
-					for(String replyToCandidate : replyToCandidates)
+					ArrayList<String> threadMessageIdCandidates = buildReplyToCandidates(prThreadId);
+					for(String threadMessageIdCandidate : threadMessageIdCandidates)
 					{
-						HttpResult threadedResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, replyToCandidate));
+						HttpResult threadedResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, threadMessageIdCandidate));
 						status = threadedResult.status;
 						localResponse = threadedResult.body;
-						debug("Cliq threaded post status=" + status + ", replyToCandidate=" + replyToCandidate + ", responsePreview=" + preview(localResponse));
+						debug("Cliq threaded post status=" + status + ", threadMessageIdCandidate=" + threadMessageIdCandidate + ", responsePreview=" + preview(localResponse));
 						responseContent.append(localResponse);
 						if(status <= 299)
 						{
@@ -1001,15 +1001,16 @@ public class GitHub_Informer_New {
 		return response.toString();
 	}
 
-	public static String buildCliqPayload(String message, String imageUrl, String replyToId)
+	public static String buildCliqPayload(String message, String imageUrl, String threadMessageId)
 	{
 		StringBuilder payload = new StringBuilder();
 		payload.append("{\n\"text\":\"").append(jsonEscape(message)).append("\",");
 		payload.append("\n\"sync_message\":true,");
-		if(replyToId != null && !replyToId.isBlank())
+		if(threadMessageId != null && !threadMessageId.isBlank())
 		{
-			String normalizedReplyToId = normalizeCliqReplyToId(replyToId);
-			payload.append("\n\"reply_to\":\"").append(jsonEscape(normalizedReplyToId)).append("\",");
+			String normalizedThreadMessageId = normalizeCliqReplyToId(threadMessageId);
+			payload.append("\n\"thread_message_id\":\"").append(jsonEscape(normalizedThreadMessageId)).append("\",");
+			payload.append("\n\"post_in_parent\":false,");
 		}
 		payload.append("\n\"bot\":\n{\n\"name\":\"GitHub Informer for Zoho Cliq\",\n\"image\":\"").append(jsonEscape(imageUrl)).append("\"}}\n");
 		return payload.toString();
