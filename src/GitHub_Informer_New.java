@@ -750,10 +750,12 @@ public class GitHub_Informer_New {
 				boolean isPrEvent = "pull_request".equals(eventNameRaw) || "pull_request_target".equals(eventNameRaw);
 				String prNumber = (String) System.getenv("PULL_REQUEST_NUMBER");
 				String githubToken = (String) System.getenv("GITHUB_TOKEN");
+				debug("EventNameRaw=" + eventNameRaw + ", ActionRaw=" + ActionRaw + ", isPrEvent=" + isPrEvent + ", prNumber=" + prNumber + ", hasGithubToken=" + (githubToken != null && !githubToken.isBlank()));
 				String prThreadId = null;
 				if(isPrEvent && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
 				{
 				  prThreadId = fetchCliqThreadIdFromPRComments(Repository, prNumber, githubToken);
+				  debug("Fetched existing PR marker threadId=" + prThreadId);
 				}
 				String createdThreadId = null;
 
@@ -764,6 +766,7 @@ public class GitHub_Informer_New {
 				  HttpResult cliqResult = postJson(CliqChannelLink, TextParams);
 				  status = cliqResult.status;
 				  String localResponse = cliqResult.body;
+				  debug("Cliq post status=" + status + ", usingReplyTo=" + (prThreadId != null && !prThreadId.isBlank()) + ", responsePreview=" + preview(localResponse));
 				  responseContent.append(localResponse);
 
 				  // Fallback: if threaded post fails, retry as normal channel message.
@@ -772,6 +775,7 @@ public class GitHub_Informer_New {
 					HttpResult fallbackResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, null));
 					status = fallbackResult.status;
 					localResponse = fallbackResult.body;
+					debug("Fallback normal post status=" + status + ", responsePreview=" + preview(localResponse));
 					responseContent.append(localResponse);
 				  }
 
@@ -781,6 +785,11 @@ public class GitHub_Informer_New {
 					if(extractedId != null && !extractedId.isBlank())
 					{
 					  createdThreadId = extractedId;
+					  debug("Extracted createdThreadId from Cliq response=" + createdThreadId);
+					}
+					else
+					{
+					  debug("Could not extract thread/message id from Cliq response on PR opened event.");
 					}
 				  }
 
@@ -790,12 +799,14 @@ public class GitHub_Informer_New {
 
 				if(isPrEvent && "opened".equals(ActionRaw) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
 				{
+				  debug("Attempting to create PR marker comment with threadId=" + createdThreadId);
 				  upsertCliqThreadIdComment(Repository, prNumber, githubToken, createdThreadId);
 				}
 				else if(isPrEvent && "opened".equals(ActionRaw) && (createdThreadId == null || createdThreadId.isBlank()))
 				{
 				  System.err.println("PR thread marker not saved: Cliq response did not return a message/thread id.");
 				}
+				debug("Final message status=" + status + ", errorMessagePreview=" + preview(ERROR_MESSAGE));
 			}
 			var githubOutput = (String) System.getenv("GITHUB_OUTPUT");
 			if(Objects.nonNull(githubOutput))
@@ -929,6 +940,7 @@ public class GitHub_Informer_New {
 
 	public static HttpResult postJson(String endpoint, String payload) throws IOException
 	{
+		debug("POST endpoint=" + endpoint + ", payloadPreview=" + preview(payload));
 		HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
 		connection.setRequestMethod("POST");
 		connection.setRequestProperty("Content-Type", "application/json");
@@ -940,6 +952,7 @@ public class GitHub_Informer_New {
 		}
 		int status = connection.getResponseCode();
 		String body = readConnectionBody(connection, status > 299);
+		debug("POST response status=" + status + ", bodyPreview=" + preview(body));
 		return new HttpResult(status, body);
 	}
 
@@ -965,6 +978,7 @@ public class GitHub_Informer_New {
 	{
 		StringBuilder payload = new StringBuilder();
 		payload.append("{\n\"text\":\"").append(jsonEscape(message)).append("\",");
+		payload.append("\n\"sync_message\":true,");
 		if(replyToId != null && !replyToId.isBlank())
 		{
 			payload.append("\n\"reply_to\":\"").append(jsonEscape(replyToId)).append("\",");
@@ -1000,19 +1014,25 @@ public class GitHub_Informer_New {
 		try
 		{
 			String url = "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments?per_page=100";
+			debug("Fetching PR comments for marker from " + url);
 			HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
 			connection.setRequestMethod("GET");
 			connection.setRequestProperty("Accept", "application/vnd.github+json");
 			connection.setRequestProperty("Authorization", "Bearer " + githubToken);
 			int status = connection.getResponseCode();
 			String body = readConnectionBody(connection, status > 299);
+			debug("Fetch comments status=" + status + ", bodyPreview=" + preview(body));
 			if(status > 299 || body == null || body.isBlank())
 				return null;
 
 			Pattern markerPattern = Pattern.compile("cliq-thread-id:([^\\s<]+)");
 			Matcher markerMatcher = markerPattern.matcher(body);
 			if(markerMatcher.find())
+			{
+				debug("Existing marker found in PR comments.");
 				return markerMatcher.group(1);
+			}
+			debug("No existing marker found in PR comments.");
 		}
 		catch(Exception e)
 		{
@@ -1039,11 +1059,28 @@ public class GitHub_Informer_New {
 				os.write(payload.getBytes(UTF_8));
 				os.flush();
 			}
-			connection.getResponseCode();
+			int status = connection.getResponseCode();
+			String body = readConnectionBody(connection, status > 299);
+			debug("Create PR marker comment status=" + status + ", bodyPreview=" + preview(body));
 		}
 		catch(Exception e)
 		{
 			System.err.println("Unable to save PR thread marker: " + e.getMessage());
 		}
+	}
+
+	public static void debug(String message)
+	{
+		System.out.println("[CliqInformerDebug] " + message);
+	}
+
+	public static String preview(String value)
+	{
+		if(value == null)
+			return "<null>";
+		String sanitized = value.replace("\n", " ").replace("\r", " ").trim();
+		if(sanitized.length() > 280)
+			return sanitized.substring(0, 280) + "...";
+		return sanitized;
 	}
 }
