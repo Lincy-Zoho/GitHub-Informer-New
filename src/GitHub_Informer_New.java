@@ -749,10 +749,22 @@ public class GitHub_Informer_New {
 				}
 
 				String eventNameRaw = (String) System.getenv("GITHUB_EVENT_NAME");
-				boolean isPrEvent = "pull_request".equals(eventNameRaw) || "pull_request_target".equals(eventNameRaw);
+				String issueTypeRaw = (String) System.getenv("ISSUE_TYPE");
+				boolean isPullRequestCommentEvent = "issue_comment".equals(eventNameRaw) && "PULL_REQUEST".equals(issueTypeRaw);
+				boolean isPullRequestReviewEvent = "pull_request_review".equals(eventNameRaw);
+				boolean isPullRequestReviewCommentEvent = "pull_request_review_comment".equals(eventNameRaw);
+				boolean isPrEvent = "pull_request".equals(eventNameRaw)
+					|| "pull_request_target".equals(eventNameRaw)
+					|| isPullRequestCommentEvent
+					|| isPullRequestReviewEvent
+					|| isPullRequestReviewCommentEvent;
 				String prNumber = (String) System.getenv("PULL_REQUEST_NUMBER");
+				if((prNumber == null || prNumber.isBlank()) && isPullRequestCommentEvent)
+				{
+					prNumber = (String) System.getenv("ISSUE_NUMBER");
+				}
 				String githubToken = (String) System.getenv("GITHUB_TOKEN");
-				debug("EventNameRaw=" + eventNameRaw + ", ActionRaw=" + ActionRaw + ", isPrEvent=" + isPrEvent + ", prNumber=" + prNumber + ", hasGithubToken=" + (githubToken != null && !githubToken.isBlank()));
+				debug("EventNameRaw=" + eventNameRaw + ", ActionRaw=" + ActionRaw + ", isPrEvent=" + isPrEvent + ", isPullRequestCommentEvent=" + isPullRequestCommentEvent + ", isPullRequestReviewEvent=" + isPullRequestReviewEvent + ", isPullRequestReviewCommentEvent=" + isPullRequestReviewCommentEvent + ", prNumber=" + prNumber + ", hasGithubToken=" + (githubToken != null && !githubToken.isBlank()));
 				String prThreadId = null;
 				if(isPrEvent && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
 				{
