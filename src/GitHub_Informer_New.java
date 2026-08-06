@@ -9,6 +9,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.StandardOpenOption.APPEND;
 import static java.nio.file.StandardOpenOption.CREATE;
@@ -763,15 +764,36 @@ public class GitHub_Informer_New {
 				for(String msg : messages)
 				{
 				  msg = msg.replace("\"","'");
-				  String TextParams = buildCliqPayload(msg, GitHubInformerURL, prThreadId);
-				  HttpResult cliqResult = postJson(CliqChannelLink, TextParams);
-				  status = cliqResult.status;
-				  String localResponse = cliqResult.body;
-				  debug("Cliq post status=" + status + ", usingReplyTo=" + (prThreadId != null && !prThreadId.isBlank()) + ", responsePreview=" + preview(localResponse));
-				  responseContent.append(localResponse);
+				  String localResponse = "";
+				  boolean postedInThread = false;
+				  if(prThreadId != null && !prThreadId.isBlank())
+				  {
+					ArrayList<String> replyToCandidates = buildReplyToCandidates(prThreadId);
+					for(String replyToCandidate : replyToCandidates)
+					{
+						HttpResult threadedResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, replyToCandidate));
+						status = threadedResult.status;
+						localResponse = threadedResult.body;
+						debug("Cliq threaded post status=" + status + ", replyToCandidate=" + replyToCandidate + ", responsePreview=" + preview(localResponse));
+						responseContent.append(localResponse);
+						if(status <= 299)
+						{
+							postedInThread = true;
+							break;
+						}
+					}
+				  }
+				  else
+				  {
+					HttpResult directResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, null));
+					status = directResult.status;
+					localResponse = directResult.body;
+					debug("Cliq post status=" + status + ", usingReplyTo=false, responsePreview=" + preview(localResponse));
+					responseContent.append(localResponse);
+				  }
 
-				  // Fallback: if threaded post fails, retry as normal channel message.
-				  if(status > 299 && prThreadId != null)
+				  // Fallback: if all threaded attempts fail, retry as normal channel message.
+				  if(!postedInThread && prThreadId != null && !prThreadId.isBlank())
 				  {
 					HttpResult fallbackResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, null));
 					status = fallbackResult.status;
@@ -801,7 +823,11 @@ public class GitHub_Informer_New {
 				if(isPrEvent && "opened".equals(ActionRaw) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
 				{
 				  debug("Attempting to create PR marker comment with threadId=" + createdThreadId);
-				  upsertCliqThreadIdComment(Repository, prNumber, githubToken, createdThreadId);
+				  boolean markerSaved = upsertCliqThreadIdComment(Repository, prNumber, githubToken, createdThreadId);
+				  if(!markerSaved)
+				  {
+					System.err.println("PR thread marker not saved: GitHub API rejected marker comment write. Check workflow permissions issues:write/pull-requests:write and token scope.");
+				  }
 				}
 				else if(isPrEvent && "opened".equals(ActionRaw) && (createdThreadId == null || createdThreadId.isBlank()))
 				{
@@ -1012,6 +1038,63 @@ public class GitHub_Informer_New {
 		return trimmed;
 	}
 
+	public static ArrayList<String> buildReplyToCandidates(String rawReplyToId)
+	{
+		ArrayList<String> candidates = new ArrayList<String>();
+		if(rawReplyToId == null)
+			return candidates;
+		String trimmed = rawReplyToId.trim();
+		if(trimmed.isBlank())
+			return candidates;
+
+		addUnique(candidates, trimmed);
+
+		String decoded = trimmed;
+		try
+		{
+			decoded = URLDecoder.decode(trimmed, UTF_8);
+			addUnique(candidates, decoded);
+		}
+		catch(Exception e)
+		{
+			debug("Unable to decode reply_to id while building candidates.");
+		}
+
+		try
+		{
+			String encodedFromDecoded = URLEncoder.encode(decoded, UTF_8).replace("+", "%20");
+			addUnique(candidates, encodedFromDecoded);
+		}
+		catch(Exception e)
+		{
+			debug("Unable to URL encode decoded reply_to candidate.");
+		}
+
+		try
+		{
+			String encodedFromTrimmed = URLEncoder.encode(trimmed, UTF_8).replace("+", "%20");
+			addUnique(candidates, encodedFromTrimmed);
+		}
+		catch(Exception e)
+		{
+			debug("Unable to URL encode raw reply_to candidate.");
+		}
+
+		debug("Built reply_to candidates count=" + candidates.size());
+		return candidates;
+	}
+
+	public static void addUnique(ArrayList<String> items, String value)
+	{
+		if(value == null)
+			return;
+		String normalized = value.trim();
+		if(normalized.isBlank())
+			return;
+		if(!items.contains(normalized))
+			items.add(normalized);
+	}
+
 	public static String jsonEscape(String raw)
 	{
 		if(raw == null)
@@ -1066,7 +1149,7 @@ public class GitHub_Informer_New {
 		return null;
 	}
 
-	public static void upsertCliqThreadIdComment(String repository, String prNumber, String githubToken, String threadId)
+	public static boolean upsertCliqThreadIdComment(String repository, String prNumber, String githubToken, String threadId)
 	{
 		try
 		{
@@ -1087,10 +1170,15 @@ public class GitHub_Informer_New {
 			int status = connection.getResponseCode();
 			String body = readConnectionBody(connection, status > 299);
 			debug("Create PR marker comment status=" + status + ", bodyPreview=" + preview(body));
+			if(status >= 200 && status <= 299)
+				return true;
+			System.err.println("Unable to save PR thread marker: status=" + status + ", body=" + preview(body));
+			return false;
 		}
 		catch(Exception e)
 		{
 			System.err.println("Unable to save PR thread marker: " + e.getMessage());
+			return false;
 		}
 	}
 
