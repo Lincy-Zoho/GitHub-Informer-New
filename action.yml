@@ -338,6 +338,8 @@ runs:
       - name: "Running the Cliq Integration"
         id: send-message
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           JAVA=$JAVA_HOME_19_X64/bin/java
           CONNECTOR=$GITHUB_ACTION_PATH/src/GitHub_Informer_New.java
