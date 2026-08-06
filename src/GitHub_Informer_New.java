@@ -811,7 +811,7 @@ public class GitHub_Informer_New {
 			var githubOutput = (String) System.getenv("GITHUB_OUTPUT");
 			if(Objects.nonNull(githubOutput))
 			    GITHUB_ERROR = false;
-			if(status == 204)
+			if(status == 204 || status == 200 || status == 201)
 			  MESSAGE_SEND_FAILURE_ERROR = false;
 			if(INVALID_ENDPOINT_ERROR)
 			  ERROR_MESSAGE = "Invalid Endpoint. Endpoint must be of format : <Zoho Cliq Channel API Endpoint>?zapikey=<Zoho Cliq Webhook Token>";
@@ -819,7 +819,7 @@ public class GitHub_Informer_New {
 			  ERROR_MESSAGE = "Environmental Variable GITHUB_OUTPUT missing";
 			else if(MESSAGE_SEND_FAILURE_ERROR)
 			  ERROR_MESSAGE = responseContent.toString().isBlank() ? ERROR_MESSAGE : responseContent.toString();
-			else if(status == 204)
+			else if(status == 204 || status == 200 || status == 201)
 			  ERROR_MESSAGE = "GitHub Informer executed Successfully";
 			writeGithubOutput(status,ERROR_MESSAGE);
 		}  catch (MalformedURLException e) {
