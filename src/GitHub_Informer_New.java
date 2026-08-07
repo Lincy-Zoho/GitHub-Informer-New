@@ -765,6 +765,11 @@ public class GitHub_Informer_New {
 				}
 				String githubToken = (String) System.getenv("GITHUB_TOKEN");
 				debug("EventNameRaw=" + eventNameRaw + ", ActionRaw=" + ActionRaw + ", isPrEvent=" + isPrEvent + ", isPullRequestCommentEvent=" + isPullRequestCommentEvent + ", isPullRequestReviewEvent=" + isPullRequestReviewEvent + ", isPullRequestReviewCommentEvent=" + isPullRequestReviewCommentEvent + ", prNumber=" + prNumber + ", hasGithubToken=" + (githubToken != null && !githubToken.isBlank()));
+				String pullRequestTitleRaw = (String) System.getenv("PULL_REQUEST_TITLE");
+				String pullRequestBodyRaw = (String) System.getenv("PULL_REQUEST_BODY");
+				String pullRequestUrlRaw = (String) System.getenv("PULL_REQUEST_URL");
+				String pullRequestHeadShaRaw = (String) System.getenv("PULL_REQUEST_HEAD_SHA");
+				String prLabelsRaw = (String) System.getenv("PR_LABELS");
 				String prThreadId = null;
 				if(isPrEvent && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
 				{
@@ -844,6 +849,28 @@ public class GitHub_Informer_New {
 				else if(isPrEvent && "opened".equals(ActionRaw) && (createdThreadId == null || createdThreadId.isBlank()))
 				{
 				  System.err.println("PR thread marker not saved: Cliq response did not return a message/thread id.");
+				}
+
+				if(isPrEvent)
+				{
+					String aiThreadId = prThreadId;
+					if((aiThreadId == null || aiThreadId.isBlank()) && createdThreadId != null && !createdThreadId.isBlank())
+						aiThreadId = createdThreadId;
+					handleAiReviewGate(
+						Repository,
+						prNumber,
+						eventNameRaw,
+						ActionRaw,
+						prLabelsRaw,
+						pullRequestTitleRaw,
+						pullRequestBodyRaw,
+						pullRequestUrlRaw,
+						pullRequestHeadShaRaw,
+						githubToken,
+						CliqChannelLink,
+						aiThreadId,
+						GitHubInformerURL
+					);
 				}
 				debug("Final message status=" + status + ", errorMessagePreview=" + preview(ERROR_MESSAGE));
 			}
@@ -992,6 +1019,34 @@ public class GitHub_Informer_New {
 		int status = connection.getResponseCode();
 		String body = readConnectionBody(connection, status > 299);
 		debug("POST response status=" + status + ", bodyPreview=" + preview(body));
+		return new HttpResult(status, body);
+	}
+
+	public static HttpResult sendHttpRequest(String method, String endpoint, String payload, Map<String, String> headers) throws IOException
+	{
+		debug(method + " endpoint=" + endpoint + ", payloadPreview=" + preview(payload));
+		HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
+		connection.setRequestMethod(method);
+		if(headers != null)
+		{
+			for(Map.Entry<String, String> header : headers.entrySet())
+			{
+				if(header.getValue() != null && !header.getValue().isBlank())
+					connection.setRequestProperty(header.getKey(), header.getValue());
+			}
+		}
+		if(payload != null)
+		{
+			connection.setDoOutput(true);
+			try (OutputStream os = connection.getOutputStream())
+			{
+				os.write(payload.getBytes(UTF_8));
+				os.flush();
+			}
+		}
+		int status = connection.getResponseCode();
+		String body = readConnectionBody(connection, status > 299);
+		debug(method + " response status=" + status + ", bodyPreview=" + preview(body));
 		return new HttpResult(status, body);
 	}
 
@@ -1193,6 +1248,446 @@ public class GitHub_Informer_New {
 			System.err.println("Unable to save PR thread marker: " + e.getMessage());
 			return false;
 		}
+	}
+
+	public static class AiReviewDecision
+	{
+		public boolean passed;
+		public String summary;
+		public String details;
+
+		public AiReviewDecision(boolean passed, String summary, String details)
+		{
+			this.passed = passed;
+			this.summary = summary == null ? "" : summary;
+			this.details = details == null ? "" : details;
+		}
+	}
+
+	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestHeadSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
+	{
+		if(!isTrue(System.getenv("AI_REVIEW_ENABLED")))
+			return;
+		if(prNumber == null || prNumber.isBlank())
+			return;
+
+		String triggerMode = defaultIfBlank(System.getenv("AI_REVIEW_TRIGGER"), "auto").trim().toLowerCase();
+		boolean runOnSync = isTrue(defaultIfBlank(System.getenv("AI_REVIEW_ON_SYNC"), "true"));
+		String triggerLabel = defaultIfBlank(System.getenv("AI_REVIEW_LABEL"), "");
+
+		if(!shouldRunAiReviewForEvent(triggerMode, triggerLabel, runOnSync, eventNameRaw, actionRaw, prLabelsRaw))
+			return;
+
+		String checkName = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
+		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, githubToken);
+
+		if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+		{
+			setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkName, decision.passed, decision.summary, decision.details);
+		}
+		else
+		{
+			System.err.println("AI review check run skipped: missing github token or PR head sha.");
+		}
+
+		if(!decision.passed)
+		{
+			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
+			if(githubToken != null && !githubToken.isBlank())
+			{
+				postPullRequestComment(repository, prNumber, githubToken, failureMessage);
+			}
+			else
+			{
+				System.err.println("AI review failure PR comment skipped: missing github token.");
+			}
+
+			postAiFailureToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, failureMessage);
+		}
+	}
+
+	public static boolean shouldRunAiReviewForEvent(String triggerMode, String triggerLabel, boolean runOnSync, String eventNameRaw, String actionRaw, String prLabelsRaw)
+	{
+		if(!"pull_request".equals(eventNameRaw) && !"pull_request_target".equals(eventNameRaw))
+			return false;
+
+		if("auto".equals(triggerMode))
+		{
+			if("opened".equals(actionRaw) || "reopened".equals(actionRaw))
+				return true;
+			if("synchronize".equals(actionRaw))
+				return runOnSync;
+			return false;
+		}
+
+		if("label".equals(triggerMode))
+		{
+			if(triggerLabel == null || triggerLabel.isBlank())
+				return false;
+			if(!("opened".equals(actionRaw) || "reopened".equals(actionRaw) || "synchronize".equals(actionRaw) || "labeled".equals(actionRaw)))
+				return false;
+			if("synchronize".equals(actionRaw) && !runOnSync)
+				return false;
+			return hasLabel(prLabelsRaw, triggerLabel);
+		}
+
+		return false;
+	}
+
+	public static boolean hasLabel(String labelsRaw, String expectedLabel)
+	{
+		if(labelsRaw == null || labelsRaw.isBlank() || expectedLabel == null || expectedLabel.isBlank())
+			return false;
+		for(String label : labelsRaw.split("\\\\|\\\\||,|\\n"))
+		{
+			if(expectedLabel.trim().equalsIgnoreCase(label.trim()))
+				return true;
+		}
+		return false;
+	}
+
+	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String githubToken)
+	{
+		String aiToken = (String) System.getenv("AI_REVIEW_TOKEN");
+		String modelFromEnv = defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), "");
+		String apiUrlFromEnv = defaultIfBlank(System.getenv("AI_REVIEW_API_URL"), "");
+
+		if(aiToken == null || aiToken.isBlank())
+			return new AiReviewDecision(false, "AI Review Gate failed", "AI review token is missing.");
+		if(githubToken == null || githubToken.isBlank())
+			return new AiReviewDecision(false, "AI Review Gate failed", "GITHUB_TOKEN is missing.");
+
+		String diff = fetchPullRequestDiff(repository, prNumber, githubToken);
+		if(diff == null || diff.isBlank())
+			return new AiReviewDecision(false, "AI Review Gate failed", "Unable to fetch PR diff from GitHub.");
+
+		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff);
+		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
+		String model = resolveModelForProvider(provider, modelFromEnv);
+		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
+		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: concise bullet points. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic.";
+
+		try
+		{
+			HttpResult aiResponse = invokeAiProvider(provider, apiUrl, aiToken, model, systemPrompt, userPrompt);
+			if(aiResponse.status < 200 || aiResponse.status > 299)
+				return new AiReviewDecision(false, "AI Review Gate failed", provider + " request failed with status " + aiResponse.status + ".");
+
+			String content = extractAiContent(aiResponse.body, provider);
+			if(content == null || content.isBlank())
+				return new AiReviewDecision(false, "AI Review Gate failed", provider + " returned empty content.");
+
+			Matcher resultMatcher = Pattern.compile("(?im)^\\s*RESULT\\s*:\\s*(PASS|FAIL)\\s*$").matcher(content);
+			if(!resultMatcher.find())
+				return new AiReviewDecision(false, "AI Review Gate failed", "AI response did not include a valid RESULT field.");
+
+			boolean passed = "PASS".equalsIgnoreCase(resultMatcher.group(1));
+			String summary = extractLine(content, "SUMMARY");
+			if(summary == null || summary.isBlank())
+				summary = passed ? "AI review passed" : "AI review failed";
+			String details = content;
+			return new AiReviewDecision(passed, summary, details);
+		}
+		catch(Exception e)
+		{
+			return new AiReviewDecision(false, "AI Review Gate failed", provider + " error: " + e.getMessage());
+		}
+	}
+
+	public static String detectAiProvider(String token, String apiUrl)
+	{
+		String url = defaultIfBlank(apiUrl, "").toLowerCase();
+		if(url.contains("anthropic"))
+			return "claude";
+		if(url.contains("generativelanguage.googleapis.com") || url.contains("gemini"))
+			return "gemini";
+		if(url.contains("openai"))
+			return "openai";
+
+		String normalizedToken = defaultIfBlank(token, "").trim();
+		if(normalizedToken.startsWith("sk-ant-"))
+			return "claude";
+		if(normalizedToken.startsWith("AIza"))
+			return "gemini";
+		if(normalizedToken.startsWith("sk-"))
+			return "openai";
+
+		// Default to OpenAI-compatible for unknown token patterns.
+		return "openai";
+	}
+
+	public static String resolveModelForProvider(String provider, String configuredModel)
+	{
+		if(configuredModel != null && !configuredModel.isBlank())
+			return configuredModel;
+		if("claude".equals(provider))
+			return "claude-3-5-sonnet-latest";
+		if("gemini".equals(provider))
+			return "gemini-1.5-pro";
+		return "gpt-4.1-mini";
+	}
+
+	public static String resolveApiUrlForProvider(String provider, String configuredApiUrl)
+	{
+		if(configuredApiUrl != null && !configuredApiUrl.isBlank())
+			return configuredApiUrl;
+		if("claude".equals(provider))
+			return "https://api.anthropic.com/v1/messages";
+		if("gemini".equals(provider))
+			return "https://generativelanguage.googleapis.com/v1beta/models";
+		return "https://api.openai.com/v1/chat/completions";
+	}
+
+	public static HttpResult invokeAiProvider(String provider, String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
+	{
+		if("claude".equals(provider))
+			return invokeClaude(apiUrl, token, model, systemPrompt, userPrompt);
+		if("gemini".equals(provider))
+			return invokeGemini(apiUrl, token, model, systemPrompt, userPrompt);
+		return invokeOpenAiCompatible(apiUrl, token, model, systemPrompt, userPrompt);
+	}
+
+	public static HttpResult invokeOpenAiCompatible(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
+	{
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"temperature\":0.1,\"messages\":[{\"role\":\"system\",\"content\":\"" + jsonEscape(systemPrompt) + "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		HashMap<String, String> headers = new HashMap<String, String>();
+		headers.put("Content-Type", "application/json");
+		headers.put("Authorization", "Bearer " + token);
+		return sendHttpRequest("POST", apiUrl, payload, headers);
+	}
+
+	public static HttpResult invokeClaude(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
+	{
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":1200,\"temperature\":0.1,\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		HashMap<String, String> headers = new HashMap<String, String>();
+		headers.put("Content-Type", "application/json");
+		headers.put("x-api-key", token);
+		headers.put("anthropic-version", "2023-06-01");
+		return sendHttpRequest("POST", apiUrl, payload, headers);
+	}
+
+	public static HttpResult invokeGemini(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
+	{
+		String endpoint = apiUrl;
+		if(!endpoint.contains("generateContent"))
+		{
+			if(endpoint.endsWith("/"))
+				endpoint = endpoint.substring(0, endpoint.length() - 1);
+			endpoint = endpoint + "/" + urlEncodePathSegment(model) + ":generateContent";
+		}
+		if(endpoint.contains("?"))
+			endpoint = endpoint + "&key=" + URLEncoder.encode(token, UTF_8);
+		else
+			endpoint = endpoint + "?key=" + URLEncoder.encode(token, UTF_8);
+
+		String payload = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jsonEscape(systemPrompt) + "\"}]},\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(userPrompt) + "\"}]}],\"generationConfig\":{\"temperature\":0.1}}";
+		HashMap<String, String> headers = new HashMap<String, String>();
+		headers.put("Content-Type", "application/json");
+		return sendHttpRequest("POST", endpoint, payload, headers);
+	}
+
+	public static String urlEncodePathSegment(String raw)
+	{
+		if(raw == null)
+			return "";
+		return raw.replace(" ", "%20");
+	}
+
+	public static String fetchPullRequestDiff(String repository, String prNumber, String githubToken)
+	{
+		try
+		{
+			HashMap<String, String> headers = new HashMap<String, String>();
+			headers.put("Accept", "application/vnd.github.v3.diff");
+			headers.put("Authorization", "Bearer " + githubToken);
+			HttpResult response = sendHttpRequest("GET", "https://api.github.com/repos/" + repository + "/pulls/" + prNumber, null, headers);
+			if(response.status >= 200 && response.status <= 299)
+				return response.body;
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to fetch PR diff: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static String buildAiPrompt(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String diff)
+	{
+		StringBuilder prompt = new StringBuilder();
+		prompt.append("Repository: ").append(defaultIfBlank(repository, "")).append("\\n");
+		prompt.append("PR Number: ").append(defaultIfBlank(prNumber, "")).append("\\n");
+		prompt.append("PR Title: ").append(defaultIfBlank(pullRequestTitle, "")).append("\\n");
+		prompt.append("PR URL: ").append(defaultIfBlank(pullRequestUrl, "")).append("\\n\\n");
+		prompt.append("PR Description:\\n").append(defaultIfBlank(pullRequestBody, "")).append("\\n\\n");
+		prompt.append("Diff:\\n").append(trimTo(defaultIfBlank(diff, ""), 18000));
+		return prompt.toString();
+	}
+
+	public static String extractAiContent(String body, String provider)
+	{
+		if(body == null || body.isBlank())
+			return "";
+		if("claude".equals(provider))
+			return extractClaudeContent(body);
+		if("gemini".equals(provider))
+			return extractGeminiContent(body);
+		return extractOpenAiContent(body);
+	}
+
+	public static String extractOpenAiContent(String body)
+	{
+		if(body == null || body.isBlank())
+			return "";
+		Matcher messageMatcher = Pattern.compile("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"", Pattern.DOTALL).matcher(body);
+		if(messageMatcher.find())
+			return jsonUnescape(messageMatcher.group(1));
+		return "";
+	}
+
+	public static String extractClaudeContent(String body)
+	{
+		if(body == null || body.isBlank())
+			return "";
+		Matcher textMatcher = Pattern.compile("\\\"text\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"", Pattern.DOTALL).matcher(body);
+		if(textMatcher.find())
+			return jsonUnescape(textMatcher.group(1));
+		return "";
+	}
+
+	public static String extractGeminiContent(String body)
+	{
+		if(body == null || body.isBlank())
+			return "";
+		Matcher textMatcher = Pattern.compile("\\\"text\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"", Pattern.DOTALL).matcher(body);
+		if(textMatcher.find())
+			return jsonUnescape(textMatcher.group(1));
+		return "";
+	}
+
+	public static String extractLine(String content, String key)
+	{
+		if(content == null)
+			return "";
+		Matcher matcher = Pattern.compile("(?im)^\\s*" + Pattern.quote(key) + "\\s*:\\s*(.+)$").matcher(content);
+		if(matcher.find())
+			return matcher.group(1).trim();
+		return "";
+	}
+
+	public static String jsonUnescape(String raw)
+	{
+		if(raw == null)
+			return "";
+		return raw.replace("\\\\n", "\\n").replace("\\\\r", "").replace("\\\\\"", "\"").replace("\\\\\\\\", "\\");
+	}
+
+	public static String trimTo(String value, int maxLen)
+	{
+		if(value == null)
+			return "";
+		if(value.length() <= maxLen)
+			return value;
+		return value.substring(0, maxLen) + "\\n\\n[truncated]";
+	}
+
+	public static String buildAiFailureMessage(String prNumber, String pullRequestUrl, String summary, String details)
+	{
+		StringBuilder msg = new StringBuilder();
+		msg.append("### AI Review Gate: FAILED\\n\\n");
+		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
+		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
+			msg.append("(").append(pullRequestUrl).append(")");
+		msg.append("\\n\\n");
+		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review failed")).append("\\n\\n");
+		msg.append("**Details:**\\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\\n\\n");
+		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
+		return msg.toString();
+	}
+
+	public static void postPullRequestComment(String repository, String prNumber, String githubToken, String commentBody)
+	{
+		try
+		{
+			String payload = "{\"body\":\"" + jsonEscape(commentBody) + "\"}";
+			HashMap<String, String> headers = new HashMap<String, String>();
+			headers.put("Accept", "application/vnd.github+json");
+			headers.put("Authorization", "Bearer " + githubToken);
+			headers.put("Content-Type", "application/json");
+			HttpResult response = sendHttpRequest("POST", "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments", payload, headers);
+			if(response.status < 200 || response.status > 299)
+				System.err.println("Failed to post AI review PR comment: status=" + response.status + ", body=" + preview(response.body));
+		}
+		catch(Exception e)
+		{
+			System.err.println("Failed to post AI review PR comment: " + e.getMessage());
+		}
+	}
+
+	public static void postAiFailureToCliqThread(String cliqEndpoint, String cliqThreadId, String imageUrl, String failureMessage)
+	{
+		if(cliqEndpoint == null || cliqEndpoint.isBlank())
+			return;
+		try
+		{
+			String message = "AI Review Gate failed.\\n" + failureMessage;
+			if(cliqThreadId != null && !cliqThreadId.isBlank())
+			{
+				ArrayList<String> candidates = buildReplyToCandidates(cliqThreadId);
+				for(String candidate : candidates)
+				{
+					HttpResult result = postJson(cliqEndpoint, buildCliqPayload(message, imageUrl, candidate));
+					if(result.status >= 200 && result.status <= 299)
+						return;
+				}
+			}
+			postJson(cliqEndpoint, buildCliqPayload(message, imageUrl, null));
+		}
+		catch(Exception e)
+		{
+			System.err.println("Failed to post AI review failure in Cliq: " + e.getMessage());
+		}
+	}
+
+	public static void setAiReviewCheckRun(String repository, String headSha, String githubToken, String checkName, boolean passed, String summary, String details)
+	{
+		try
+		{
+			String conclusion = passed ? "success" : "failure";
+			String payload = "{"
+				+ "\"name\":\"" + jsonEscape(checkName) + "\"," 
+				+ "\"head_sha\":\"" + jsonEscape(headSha) + "\"," 
+				+ "\"status\":\"completed\"," 
+				+ "\"conclusion\":\"" + conclusion + "\"," 
+				+ "\"output\":{\"title\":\"" + jsonEscape(checkName) + "\",\"summary\":\"" + jsonEscape(defaultIfBlank(summary, "AI review completed")) + "\",\"text\":\"" + jsonEscape(trimTo(defaultIfBlank(details, ""), 5000)) + "\"}"
+				+ "}";
+
+			HashMap<String, String> headers = new HashMap<String, String>();
+			headers.put("Accept", "application/vnd.github+json");
+			headers.put("Authorization", "Bearer " + githubToken);
+			headers.put("Content-Type", "application/json");
+			HttpResult response = sendHttpRequest("POST", "https://api.github.com/repos/" + repository + "/check-runs", payload, headers);
+			if(response.status < 200 || response.status > 299)
+				System.err.println("Failed to set AI review check run: status=" + response.status + ", body=" + preview(response.body));
+		}
+		catch(Exception e)
+		{
+			System.err.println("Failed to set AI review check run: " + e.getMessage());
+		}
+	}
+
+	public static boolean isTrue(String value)
+	{
+		if(value == null)
+			return false;
+		String normalized = value.trim().toLowerCase();
+		return "true".equals(normalized) || "1".equals(normalized) || "yes".equals(normalized);
+	}
+
+	public static String defaultIfBlank(String value, String fallback)
+	{
+		if(value == null || value.isBlank())
+			return fallback;
+		return value;
 	}
 
 	public static void debug(String message)
