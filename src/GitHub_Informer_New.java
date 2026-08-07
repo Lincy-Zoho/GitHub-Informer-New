@@ -1365,7 +1365,7 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: concise bullet points. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic.";
+		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.) with one issue per point and a clear fix action. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic.";
 
 		try
 		{
@@ -1379,13 +1379,15 @@ public class GitHub_Informer_New {
 
 			Boolean passedDecision = parseAiPassFail(content, aiResponse.body);
 			if(passedDecision == null)
-				return new AiReviewDecision(false, "AI Review Gate failed", "AI response did not include a valid RESULT field.");
+				return new AiReviewDecision(false, "AI Review Gate failed", "AI response did not include a valid RESULT field. Response preview: " + trimTo(defaultIfBlank(content, aiResponse.body), 800));
 
 			boolean passed = passedDecision.booleanValue();
 			String summary = extractLine(content, "SUMMARY");
 			if(summary == null || summary.isBlank())
 				summary = passed ? "AI review passed" : "AI review failed";
-			String details = content;
+			String details = formatAiReviewDetails(content);
+			if(details == null || details.isBlank())
+				details = "1. No detailed issues were returned by the AI response.";
 			return new AiReviewDecision(passed, summary, details);
 		}
 		catch(Exception e)
@@ -1574,16 +1576,72 @@ public class GitHub_Informer_New {
 		return "";
 	}
 
+	public static String formatAiReviewDetails(String content)
+	{
+		String source = defaultIfBlank(content, "");
+		if(source.isBlank())
+			return "";
+
+		source = source.replace("\\r", "").replace("\\\\n", "\\n").replace("**", "").replace("__", "");
+		String[] lines = source.split("\\n");
+
+		ArrayList<String> points = new ArrayList<String>();
+		for(String rawLine : lines)
+		{
+			if(rawLine == null)
+				continue;
+			String line = rawLine.trim();
+			if(line.isBlank())
+				continue;
+
+			if(line.matches("(?i)^\\s*(RESULT|SUMMARY|DETAILS|VERDICT|DECISION|OUTCOME)\\s*[:=].*$"))
+				continue;
+
+			line = line.replaceFirst("^\\s*[-*]\\s+", "");
+			line = line.replaceFirst("^\\s*\\d+[.)]\\s+", "");
+			line = line.trim();
+			if(line.isBlank())
+				continue;
+			points.add(line);
+		}
+
+		if(points.isEmpty())
+		{
+			String flattened = source.replaceAll("(?i)\\b(RESULT|SUMMARY|DETAILS|VERDICT|DECISION|OUTCOME)\\s*[:=]", "");
+			flattened = flattened.replace("\\n", " ").replaceAll("\\s+", " ").trim();
+			if(!flattened.isBlank())
+				points.add(flattened);
+		}
+
+		if(points.isEmpty())
+			return "";
+
+		StringBuilder formatted = new StringBuilder();
+		int limit = Math.min(points.size(), 10);
+		for(int i = 0; i < limit; i++)
+		{
+			formatted.append(i + 1).append(". ").append(points.get(i));
+			if(i < limit - 1)
+				formatted.append("\\n");
+		}
+		return formatted.toString();
+	}
+
 	public static Boolean parseAiPassFail(String content, String rawBody)
 	{
 		String source = defaultIfBlank(content, "");
 		if(source.isBlank())
 			source = defaultIfBlank(rawBody, "");
+		source = source.replace("**", "").replace("__", "");
 
 		String patterns = "(PASS|FAIL|FAILED|APPROVED|REJECTED)";
-		Matcher labeled = Pattern.compile("(?im)\\b(RESULT|VERDICT|DECISION|OUTCOME)\\b\\s*[:=]\\s*" + patterns + "\\b").matcher(source);
+		Matcher labeled = Pattern.compile("(?im)\\b(RESULT|VERDICT|DECISION|OUTCOME)\\b\\s*(?:[:=]|-|->|=>)\\s*" + patterns + "\\b").matcher(source);
 		if(labeled.find())
 			return mapDecisionToken(labeled.group(2));
+
+		Matcher markdownList = Pattern.compile("(?im)^\\s*[-*]\\s*(RESULT|VERDICT|DECISION|OUTCOME)\\s*(?:[:=]|-|->|=>)\\s*" + patterns + "\\b").matcher(source);
+		if(markdownList.find())
+			return mapDecisionToken(markdownList.group(2));
 
 		Matcher jsonResult = Pattern.compile("(?im)\"(result|verdict|decision|outcome)\"\\s*:\\s*\"" + patterns + "\"").matcher(source);
 		if(jsonResult.find())
@@ -1631,7 +1689,7 @@ public class GitHub_Informer_New {
 			msg.append("(").append(pullRequestUrl).append(")");
 		msg.append("\n\n");
 		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review failed")).append("\n\n");
-		msg.append("**Details:**\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\n\n");
+		msg.append("**Details (Step-by-step):**\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\n\n");
 		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
 		return msg.toString();
 	}
