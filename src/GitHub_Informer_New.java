@@ -1071,7 +1071,8 @@ public class GitHub_Informer_New {
 	public static String buildCliqPayload(String message, String imageUrl, String threadMessageId)
 	{
 		StringBuilder payload = new StringBuilder();
-		payload.append("{\n\"text\":\"").append(jsonEscape(message)).append("\",");
+		payload.append("{\n\"card\":{\"theme\":\"modern-inline\"},");
+		payload.append("\n\"text\":\"").append(jsonEscape(message)).append("\",");
 		payload.append("\n\"sync_message\":true,");
 		if(threadMessageId != null && !threadMessageId.isBlank())
 		{
