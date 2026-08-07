@@ -1382,7 +1382,7 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.) with one issue per point and a clear fix action. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic.";
+		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic.";
 
 		try
 		{
@@ -1401,7 +1401,7 @@ public class GitHub_Informer_New {
 			boolean passed = passedDecision.booleanValue();
 			String summary = extractLine(content, "SUMMARY");
 			if(summary == null || summary.isBlank())
-				summary = passed ? "AI review passed" : "AI review failed";
+				summary = passed ? "AI review passed" : "AI review report";
 			String details = formatAiReviewDetails(content);
 			if(details == null || details.isBlank())
 				details = "1. No detailed issues were returned by the AI response.";
@@ -1743,12 +1743,12 @@ public class GitHub_Informer_New {
 	public static String buildAiFailureMessage(String prNumber, String pullRequestUrl, String summary, String details)
 	{
 		StringBuilder msg = new StringBuilder();
-		msg.append("### AI Review Gate: FAILED\n\n");
+		msg.append("### AI Review Report\n\n");
 		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
 		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
 			msg.append("(").append(pullRequestUrl).append(")");
 		msg.append("\n\n");
-		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review failed")).append("\n\n");
+		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review report")).append("\n\n");
 		msg.append("**Details (Step-by-step):**\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\n\n");
 		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
 		return msg.toString();
@@ -1779,7 +1779,7 @@ public class GitHub_Informer_New {
 			return;
 		try
 		{
-			String message = "AI Review Gate failed.\\n" + failureMessage;
+			String message = "AI Review Report.\\n" + failureMessage;
 			if(cliqThreadId != null && !cliqThreadId.isBlank())
 			{
 				ArrayList<String> candidates = buildReplyToCandidates(cliqThreadId);
