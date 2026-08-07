@@ -1377,11 +1377,11 @@ public class GitHub_Informer_New {
 			if(content == null || content.isBlank())
 				return new AiReviewDecision(false, "AI Review Gate failed", provider + " returned empty content.");
 
-			Matcher resultMatcher = Pattern.compile("(?im)^\\s*RESULT\\s*:\\s*(PASS|FAIL)\\s*$").matcher(content);
-			if(!resultMatcher.find())
+			Boolean passedDecision = parseAiPassFail(content, aiResponse.body);
+			if(passedDecision == null)
 				return new AiReviewDecision(false, "AI Review Gate failed", "AI response did not include a valid RESULT field.");
 
-			boolean passed = "PASS".equalsIgnoreCase(resultMatcher.group(1));
+			boolean passed = passedDecision.booleanValue();
 			String summary = extractLine(content, "SUMMARY");
 			if(summary == null || summary.isBlank())
 				summary = passed ? "AI review passed" : "AI review failed";
@@ -1574,6 +1574,38 @@ public class GitHub_Informer_New {
 		return "";
 	}
 
+	public static Boolean parseAiPassFail(String content, String rawBody)
+	{
+		String source = defaultIfBlank(content, "");
+		if(source.isBlank())
+			source = defaultIfBlank(rawBody, "");
+
+		String patterns = "(PASS|FAIL|FAILED|APPROVED|REJECTED)";
+		Matcher labeled = Pattern.compile("(?im)\\b(RESULT|VERDICT|DECISION|OUTCOME)\\b\\s*[:=]\\s*" + patterns + "\\b").matcher(source);
+		if(labeled.find())
+			return mapDecisionToken(labeled.group(2));
+
+		Matcher jsonResult = Pattern.compile("(?im)\"(result|verdict|decision|outcome)\"\\s*:\\s*\"" + patterns + "\"").matcher(source);
+		if(jsonResult.find())
+			return mapDecisionToken(jsonResult.group(2));
+
+		Matcher standalone = Pattern.compile("(?im)^\\s*" + patterns + "\\s*$").matcher(source);
+		if(standalone.find())
+			return mapDecisionToken(standalone.group(1));
+
+		return null;
+	}
+
+	public static Boolean mapDecisionToken(String token)
+	{
+		String normalized = defaultIfBlank(token, "").trim().toUpperCase();
+		if("PASS".equals(normalized) || "APPROVED".equals(normalized))
+			return true;
+		if("FAIL".equals(normalized) || "FAILED".equals(normalized) || "REJECTED".equals(normalized))
+			return false;
+		return null;
+	}
+
 	public static String jsonUnescape(String raw)
 	{
 		if(raw == null)
@@ -1593,13 +1625,13 @@ public class GitHub_Informer_New {
 	public static String buildAiFailureMessage(String prNumber, String pullRequestUrl, String summary, String details)
 	{
 		StringBuilder msg = new StringBuilder();
-		msg.append("### AI Review Gate: FAILED\\n\\n");
+		msg.append("### AI Review Gate: FAILED\n\n");
 		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
 		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
 			msg.append("(").append(pullRequestUrl).append(")");
-		msg.append("\\n\\n");
-		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review failed")).append("\\n\\n");
-		msg.append("**Details:**\\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\\n\\n");
+		msg.append("\n\n");
+		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review failed")).append("\n\n");
+		msg.append("**Details:**\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\n\n");
 		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
 		return msg.toString();
 	}
