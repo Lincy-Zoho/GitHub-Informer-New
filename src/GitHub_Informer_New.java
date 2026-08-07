@@ -769,6 +769,7 @@ public class GitHub_Informer_New {
 				String pullRequestBodyRaw = (String) System.getenv("PULL_REQUEST_BODY");
 				String pullRequestUrlRaw = (String) System.getenv("PULL_REQUEST_URL");
 				String pullRequestDiffUrlRaw = (String) System.getenv("PULL_REQUEST_DIFF_URL");
+				String pullRequestBaseShaRaw = (String) System.getenv("PULL_REQUEST_BASE_SHA");
 				String pullRequestHeadShaRaw = (String) System.getenv("PULL_REQUEST_HEAD_SHA");
 				String prLabelsRaw = (String) System.getenv("PR_LABELS");
 				String prThreadId = null;
@@ -867,6 +868,7 @@ public class GitHub_Informer_New {
 						pullRequestBodyRaw,
 						pullRequestUrlRaw,
 						pullRequestDiffUrlRaw,
+						pullRequestBaseShaRaw,
 						pullRequestHeadShaRaw,
 						githubToken,
 						CliqChannelLink,
@@ -1027,29 +1029,46 @@ public class GitHub_Informer_New {
 	public static HttpResult sendHttpRequest(String method, String endpoint, String payload, Map<String, String> headers) throws IOException
 	{
 		debug(method + " endpoint=" + endpoint + ", payloadPreview=" + preview(payload));
-		HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
-		connection.setRequestMethod(method);
-		if(headers != null)
+		String currentEndpoint = endpoint;
+		for(int redirectCount = 0; redirectCount < 5; redirectCount++)
 		{
-			for(Map.Entry<String, String> header : headers.entrySet())
+			HttpURLConnection connection = (HttpURLConnection) new URL(currentEndpoint).openConnection();
+			connection.setInstanceFollowRedirects(false);
+			connection.setRequestMethod(method);
+			if(headers != null)
 			{
-				if(header.getValue() != null && !header.getValue().isBlank())
-					connection.setRequestProperty(header.getKey(), header.getValue());
+				for(Map.Entry<String, String> header : headers.entrySet())
+				{
+					if(header.getValue() != null && !header.getValue().isBlank())
+						connection.setRequestProperty(header.getKey(), header.getValue());
+				}
 			}
-		}
-		if(payload != null)
-		{
-			connection.setDoOutput(true);
-			try (OutputStream os = connection.getOutputStream())
+			if(payload != null)
 			{
-				os.write(payload.getBytes(UTF_8));
-				os.flush();
+				connection.setDoOutput(true);
+				try (OutputStream os = connection.getOutputStream())
+				{
+					os.write(payload.getBytes(UTF_8));
+					os.flush();
+				}
 			}
+			int status = connection.getResponseCode();
+			if(status == HttpURLConnection.HTTP_MOVED_PERM || status == HttpURLConnection.HTTP_MOVED_TEMP || status == HttpURLConnection.HTTP_SEE_OTHER || status == 307 || status == 308)
+			{
+				String location = connection.getHeaderField("Location");
+				if(location != null && !location.isBlank())
+				{
+					currentEndpoint = new URL(new URL(currentEndpoint), location).toString();
+					debug(method + " redirecting to=" + currentEndpoint);
+					continue;
+				}
+			}
+			String body = readConnectionBody(connection, status > 299);
+			debug(method + " response status=" + status + ", bodyPreview=" + preview(body));
+			return new HttpResult(status, body);
 		}
-		int status = connection.getResponseCode();
-		String body = readConnectionBody(connection, status > 299);
-		debug(method + " response status=" + status + ", bodyPreview=" + preview(body));
-		return new HttpResult(status, body);
+		debug(method + " exceeded redirect limit for endpoint=" + endpoint);
+		return new HttpResult(500, "");
 	}
 
 	public static String readConnectionBody(HttpURLConnection connection, boolean errorStream) throws IOException
@@ -1283,7 +1302,7 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestHeadSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
+	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
 	{
 		if(!isTrue(System.getenv("AI_REVIEW_ENABLED")))
 			return;
@@ -1298,7 +1317,7 @@ public class GitHub_Informer_New {
 			return;
 
 		String checkName = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, githubToken);
+		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
 
 		if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 		{
@@ -1365,7 +1384,7 @@ public class GitHub_Informer_New {
 		return false;
 	}
 
-	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String githubToken)
+	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
 	{
 		String aiToken = (String) System.getenv("AI_REVIEW_TOKEN");
 		String modelFromEnv = defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), "");
@@ -1376,7 +1395,7 @@ public class GitHub_Informer_New {
 		if(githubToken == null || githubToken.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "GITHUB_TOKEN is missing.");
 
-		String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, githubToken);
+		String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
 		if(diff == null || diff.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "Unable to fetch PR diff from GitHub.");
 
@@ -1514,15 +1533,29 @@ public class GitHub_Informer_New {
 		return raw.replace(" ", "%20");
 	}
 
-	public static String fetchPullRequestDiff(String repository, String prNumber, String pullRequestDiffUrl, String githubToken)
+	public static String fetchPullRequestDiff(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
 	{
 		try
 		{
 			if(pullRequestDiffUrl != null && !pullRequestDiffUrl.isBlank())
 			{
-				HttpResult diffUrlResponse = sendHttpRequest("GET", pullRequestDiffUrl, null, null);
+				HashMap<String, String> diffHeaders = new HashMap<String, String>();
+				diffHeaders.put("Accept", "application/vnd.github.v3.diff");
+				diffHeaders.put("Authorization", "Bearer " + githubToken);
+				HttpResult diffUrlResponse = sendHttpRequest("GET", pullRequestDiffUrl, null, diffHeaders);
 				if(diffUrlResponse.status >= 200 && diffUrlResponse.status <= 299 && diffUrlResponse.body != null && !diffUrlResponse.body.isBlank())
 					return diffUrlResponse.body;
+			}
+
+			if(pullRequestBaseSha != null && !pullRequestBaseSha.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+			{
+				HashMap<String, String> compareHeaders = new HashMap<String, String>();
+				compareHeaders.put("Accept", "application/vnd.github.v3.diff");
+				compareHeaders.put("Authorization", "Bearer " + githubToken);
+				String compareUrl = "https://api.github.com/repos/" + repository + "/compare/" + pullRequestBaseSha + "..." + pullRequestHeadSha;
+				HttpResult compareResponse = sendHttpRequest("GET", compareUrl, null, compareHeaders);
+				if(compareResponse.status >= 200 && compareResponse.status <= 299 && compareResponse.body != null && !compareResponse.body.isBlank())
+					return compareResponse.body;
 			}
 
 			HashMap<String, String> headers = new HashMap<String, String>();
