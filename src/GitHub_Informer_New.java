@@ -1083,6 +1083,22 @@ public class GitHub_Informer_New {
 		return payload.toString();
 	}
 
+	public static String buildCliqCardPayload(String message, String imageUrl, String threadMessageId)
+	{
+		StringBuilder payload = new StringBuilder();
+		payload.append("{\n\"card\":{\"theme\":\"modern-inline\"},");
+		payload.append("\n\"text\":\"").append(jsonEscape(message)).append("\",");
+		payload.append("\n\"sync_message\":true,");
+		if(threadMessageId != null && !threadMessageId.isBlank())
+		{
+			String normalizedThreadMessageId = normalizeCliqReplyToId(threadMessageId);
+			payload.append("\n\"thread_message_id\":\"").append(jsonEscape(normalizedThreadMessageId)).append("\",");
+			payload.append("\n\"post_in_parent\":false,");
+		}
+		payload.append("\n\"bot\":\n{\n\"name\":\"GitHub Informer for Zoho Cliq\",\n\"image\":\"").append(jsonEscape(imageUrl)).append("\"}}\n");
+		return payload.toString();
+	}
+
 	public static String normalizeCliqReplyToId(String rawReplyToId)
 	{
 		if(rawReplyToId == null)
@@ -1583,6 +1599,9 @@ public class GitHub_Informer_New {
 			return "";
 
 		source = source.replace("\\r", "").replace("\\\\n", "\\n").replace("**", "").replace("__", "");
+		Matcher detailsMatcher = Pattern.compile("(?is)\\bDETAILS\\b\\s*[:=]\\s*(.+)$").matcher(source);
+		if(detailsMatcher.find())
+			source = detailsMatcher.group(1).trim();
 		String[] lines = source.split("\\n");
 
 		ArrayList<String> points = new ArrayList<String>();
@@ -1594,15 +1613,26 @@ public class GitHub_Informer_New {
 			if(line.isBlank())
 				continue;
 
-			if(line.matches("(?i)^\\s*(RESULT|SUMMARY|DETAILS|VERDICT|DECISION|OUTCOME)\\s*[:=].*$"))
-				continue;
-
-			line = line.replaceFirst("^\\s*[-*]\\s+", "");
-			line = line.replaceFirst("^\\s*\\d+[.)]\\s+", "");
-			line = line.trim();
+			line = line.replaceFirst("(?i)^\\s*(RESULT|VERDICT|DECISION|OUTCOME)\\s*[:=]\\s*(PASS|FAIL|FAILED|APPROVED|REJECTED)\\s*", "").trim();
+			line = line.replaceFirst("(?i)^\\s*SUMMARY\\s*[:=]\\s*", "").trim();
+			line = line.replaceFirst("(?i)^\\s*DETAILS\\s*[:=]\\s*", "").trim();
 			if(line.isBlank())
 				continue;
-			points.add(line);
+
+			ArrayList<String> fragments = splitInlineNumberedPoints(line);
+			for(String fragment : fragments)
+			{
+				String item = defaultIfBlank(fragment, "").trim();
+				if(item.isBlank())
+					continue;
+
+				item = item.replaceFirst("^\\s*[-*]\\s+", "");
+				item = item.replaceFirst("^\\s*\\d+[.)]\\s+", "");
+				item = item.trim();
+				if(item.isBlank())
+					continue;
+				points.add(item);
+			}
 		}
 
 		if(points.isEmpty())
@@ -1625,6 +1655,35 @@ public class GitHub_Informer_New {
 				formatted.append("\\n");
 		}
 		return formatted.toString();
+	}
+
+	public static ArrayList<String> splitInlineNumberedPoints(String line)
+	{
+		ArrayList<String> parts = new ArrayList<String>();
+		String source = defaultIfBlank(line, "").trim();
+		if(source.isBlank())
+			return parts;
+
+		Matcher matcher = Pattern.compile("(?:(?<=^)|(?<=\\s))(\\d+[.)])\\s+").matcher(source);
+		ArrayList<Integer> starts = new ArrayList<Integer>();
+		while(matcher.find())
+			starts.add(matcher.start(1));
+
+		if(starts.size() >= 2 || (starts.size() == 1 && starts.get(0) == 0))
+		{
+			for(int i = 0; i < starts.size(); i++)
+			{
+				int start = starts.get(i);
+				int end = (i + 1 < starts.size()) ? starts.get(i + 1) : source.length();
+				String part = source.substring(start, end).trim();
+				if(!part.isBlank())
+					parts.add(part);
+			}
+		}
+
+		if(parts.isEmpty())
+			parts.add(source);
+		return parts;
 	}
 
 	public static Boolean parseAiPassFail(String content, String rawBody)
@@ -1725,12 +1784,12 @@ public class GitHub_Informer_New {
 				ArrayList<String> candidates = buildReplyToCandidates(cliqThreadId);
 				for(String candidate : candidates)
 				{
-					HttpResult result = postJson(cliqEndpoint, buildCliqPayload(message, imageUrl, candidate));
+					HttpResult result = postJson(cliqEndpoint, buildCliqCardPayload(message, imageUrl, candidate));
 					if(result.status >= 200 && result.status <= 299)
 						return;
 				}
 			}
-			postJson(cliqEndpoint, buildCliqPayload(message, imageUrl, null));
+			postJson(cliqEndpoint, buildCliqCardPayload(message, imageUrl, null));
 		}
 		catch(Exception e)
 		{
