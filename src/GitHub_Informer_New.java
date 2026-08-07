@@ -768,6 +768,7 @@ public class GitHub_Informer_New {
 				String pullRequestTitleRaw = (String) System.getenv("PULL_REQUEST_TITLE");
 				String pullRequestBodyRaw = (String) System.getenv("PULL_REQUEST_BODY");
 				String pullRequestUrlRaw = (String) System.getenv("PULL_REQUEST_URL");
+				String pullRequestDiffUrlRaw = (String) System.getenv("PULL_REQUEST_DIFF_URL");
 				String pullRequestHeadShaRaw = (String) System.getenv("PULL_REQUEST_HEAD_SHA");
 				String prLabelsRaw = (String) System.getenv("PR_LABELS");
 				String prThreadId = null;
@@ -865,6 +866,7 @@ public class GitHub_Informer_New {
 						pullRequestTitleRaw,
 						pullRequestBodyRaw,
 						pullRequestUrlRaw,
+						pullRequestDiffUrlRaw,
 						pullRequestHeadShaRaw,
 						githubToken,
 						CliqChannelLink,
@@ -1281,7 +1283,7 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestHeadSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
+	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestHeadSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
 	{
 		if(!isTrue(System.getenv("AI_REVIEW_ENABLED")))
 			return;
@@ -1296,7 +1298,7 @@ public class GitHub_Informer_New {
 			return;
 
 		String checkName = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, githubToken);
+		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, githubToken);
 
 		if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 		{
@@ -1363,7 +1365,7 @@ public class GitHub_Informer_New {
 		return false;
 	}
 
-	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String githubToken)
+	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String githubToken)
 	{
 		String aiToken = (String) System.getenv("AI_REVIEW_TOKEN");
 		String modelFromEnv = defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), "");
@@ -1374,7 +1376,7 @@ public class GitHub_Informer_New {
 		if(githubToken == null || githubToken.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "GITHUB_TOKEN is missing.");
 
-		String diff = fetchPullRequestDiff(repository, prNumber, githubToken);
+		String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, githubToken);
 		if(diff == null || diff.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "Unable to fetch PR diff from GitHub.");
 
@@ -1512,10 +1514,17 @@ public class GitHub_Informer_New {
 		return raw.replace(" ", "%20");
 	}
 
-	public static String fetchPullRequestDiff(String repository, String prNumber, String githubToken)
+	public static String fetchPullRequestDiff(String repository, String prNumber, String pullRequestDiffUrl, String githubToken)
 	{
 		try
 		{
+			if(pullRequestDiffUrl != null && !pullRequestDiffUrl.isBlank())
+			{
+				HttpResult diffUrlResponse = sendHttpRequest("GET", pullRequestDiffUrl, null, null);
+				if(diffUrlResponse.status >= 200 && diffUrlResponse.status <= 299 && diffUrlResponse.body != null && !diffUrlResponse.body.isBlank())
+					return diffUrlResponse.body;
+			}
+
 			HashMap<String, String> headers = new HashMap<String, String>();
 			headers.put("Accept", "application/vnd.github.v3.diff");
 			headers.put("Authorization", "Bearer " + githubToken);
