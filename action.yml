@@ -61,6 +61,28 @@ inputs:
     description: "The Message to be Delivered to the Cliq Channel during a pull request review comment event"
   pull-request-target-message:
     description: "The Message to be Delivered to the Cliq Channel during a pull request target event"
+  ai-review-enabled:
+    description: "Enable AI review gate for pull requests"
+    default: false
+  ai-review-trigger:
+    description: "AI review trigger mode: auto or label"
+    default: auto
+  ai-review-on-sync:
+    description: "Run AI review again when new commits are pushed to the PR"
+    default: true
+  ai-review-label:
+    description: "Label name used when ai-review-trigger is label"
+  ai-review-token:
+    description: "AI provider token for generating review"
+  ai-review-api-url:
+    description: "AI provider endpoint (optional; auto-resolved for OpenAI, Claude, and Gemini)"
+    default: "https://api.openai.com/v1/chat/completions"
+  ai-review-model:
+    description: "AI model for review generation"
+    default: "gpt-4.1-mini"
+  ai-review-check-name:
+    description: "GitHub required check name for AI review gate"
+    default: "AI Review Gate"
   push-message:
     description: "The Message to be Delivered to the Cliq Channel during a push event"
   registry-package-message:
@@ -233,8 +255,13 @@ runs:
           elif ${{ github.event_name == 'pull_request' }}
           then
             echo "PULL_REQUEST_TITLE=${{ github.event.pull_request.title }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_BODY<<EOF" >> $GITHUB_ENV
+            echo "${{ github.event.pull_request.body }}" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
             echo "PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_URL=${{ github.event.pull_request.html_url }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
+            echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
             then
               echo "ASSIGNED_USER=${{ github.event.assignee.login }}" >> $GITHUB_ENV
@@ -265,8 +292,13 @@ runs:
           elif ${{ github.event_name == 'pull_request_target' }}
           then
             echo "PULL_REQUEST_TITLE=${{ github.event.pull_request.title }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_BODY<<EOF" >> $GITHUB_ENV
+            echo "${{ github.event.pull_request.body }}" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
             echo "PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_URL=${{ github.event.pull_request.html_url }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
+            echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
             then
               echo "ASSIGNED_USER=${{ github.event.assignee.login }}" >> $GITHUB_ENV
@@ -340,6 +372,14 @@ runs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          AI_REVIEW_ENABLED: ${{ inputs.ai-review-enabled }}
+          AI_REVIEW_TRIGGER: ${{ inputs.ai-review-trigger }}
+          AI_REVIEW_ON_SYNC: ${{ inputs.ai-review-on-sync }}
+          AI_REVIEW_LABEL: ${{ inputs.ai-review-label }}
+          AI_REVIEW_TOKEN: ${{ inputs.ai-review-token }}
+          AI_REVIEW_API_URL: ${{ inputs.ai-review-api-url }}
+          AI_REVIEW_MODEL: ${{ inputs.ai-review-model }}
+          AI_REVIEW_CHECK_NAME: ${{ inputs.ai-review-check-name }}
         run: |
           JAVA=$JAVA_HOME_19_X64/bin/java
           CONNECTOR=$GITHUB_ACTION_PATH/src/GitHub_Informer_New.java
