@@ -777,6 +777,7 @@ public class GitHub_Informer_New {
 				String threadStorageMode = defaultIfBlank((String) System.getenv("CLIQ_THREAD_STORAGE_MODE"), "comment").trim().toLowerCase();
 				String projectOwnerRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_OWNER"), "");
 				String projectNumberRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_NUMBER"), "");
+				String projectIdRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_ID"), "");
 				String projectThreadFieldIdRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_ID"), "");
 				String projectThreadFieldNameRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_NAME"), "Cliq Thread ID");
 				String prThreadId = null;
@@ -789,6 +790,7 @@ public class GitHub_Informer_New {
 					  threadStorageMode,
 					  projectOwnerRaw,
 					  projectNumberRaw,
+					  projectIdRaw,
 					  projectThreadFieldIdRaw,
 					  projectThreadFieldNameRaw
 				  );
@@ -865,6 +867,7 @@ public class GitHub_Informer_New {
 					  threadStorageMode,
 					  projectOwnerRaw,
 					  projectNumberRaw,
+					  projectIdRaw,
 					  projectThreadFieldIdRaw,
 					  projectThreadFieldNameRaw
 				  );
@@ -1248,11 +1251,11 @@ public class GitHub_Informer_New {
 		return null;
 	}
 
-	public static String fetchCliqThreadId(String repository, String prNumber, String githubToken, String storageMode, String projectOwner, String projectNumberRaw, String projectThreadFieldId, String projectThreadFieldName)
+	public static String fetchCliqThreadId(String repository, String prNumber, String githubToken, String storageMode, String projectOwner, String projectNumberRaw, String projectIdRaw, String projectThreadFieldId, String projectThreadFieldName)
 	{
 		if("project".equalsIgnoreCase(defaultIfBlank(storageMode, "comment")))
 		{
-			String projectThreadId = fetchCliqThreadIdFromProjectField(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectThreadFieldName);
+			String projectThreadId = fetchCliqThreadIdFromProjectField(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectIdRaw, projectThreadFieldName);
 			if(projectThreadId != null && !projectThreadId.isBlank())
 				return projectThreadId;
 			debug("Project field storage did not return thread id. Falling back to PR marker comment lookup.");
@@ -1262,11 +1265,11 @@ public class GitHub_Informer_New {
 		return null;
 	}
 
-	public static boolean upsertCliqThreadId(String repository, String prNumber, String githubToken, String threadId, String storageMode, String projectOwner, String projectNumberRaw, String projectThreadFieldId, String projectThreadFieldName)
+	public static boolean upsertCliqThreadId(String repository, String prNumber, String githubToken, String threadId, String storageMode, String projectOwner, String projectNumberRaw, String projectIdRaw, String projectThreadFieldId, String projectThreadFieldName)
 	{
 		if("project".equalsIgnoreCase(defaultIfBlank(storageMode, "comment")))
 		{
-			boolean savedInProject = upsertCliqThreadIdInProjectField(repository, prNumber, githubToken, threadId, projectOwner, projectNumberRaw, projectThreadFieldId, projectThreadFieldName);
+			boolean savedInProject = upsertCliqThreadIdInProjectField(repository, prNumber, githubToken, threadId, projectOwner, projectNumberRaw, projectIdRaw, projectThreadFieldId, projectThreadFieldName);
 			if(savedInProject)
 				return true;
 			debug("Project field write failed. Falling back to PR marker comment write.");
@@ -1355,9 +1358,9 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	public static String fetchCliqThreadIdFromProjectField(String repository, String prNumber, String githubToken, String projectOwner, String projectNumberRaw, String projectThreadFieldName)
+	public static String fetchCliqThreadIdFromProjectField(String repository, String prNumber, String githubToken, String projectOwner, String projectNumberRaw, String projectIdRaw, String projectThreadFieldName)
 	{
-		ProjectItemContext context = resolveProjectItemContext(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectThreadFieldName);
+		ProjectItemContext context = resolveProjectItemContext(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectIdRaw, projectThreadFieldName);
 		if(context == null)
 			return null;
 		String value = defaultIfBlank(context.fieldValue, "").trim();
@@ -1367,11 +1370,11 @@ public class GitHub_Informer_New {
 		return value;
 	}
 
-	public static boolean upsertCliqThreadIdInProjectField(String repository, String prNumber, String githubToken, String threadId, String projectOwner, String projectNumberRaw, String projectThreadFieldId, String projectThreadFieldName)
+	public static boolean upsertCliqThreadIdInProjectField(String repository, String prNumber, String githubToken, String threadId, String projectOwner, String projectNumberRaw, String projectIdRaw, String projectThreadFieldId, String projectThreadFieldName)
 	{
 		try
 		{
-			ProjectItemContext context = resolveProjectItemContext(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectThreadFieldName);
+			ProjectItemContext context = resolveProjectItemContext(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectIdRaw, projectThreadFieldName);
 			if(context == null || context.projectId == null || context.projectId.isBlank() || context.itemId == null || context.itemId.isBlank())
 			{
 				System.err.println("Project thread storage skipped: unable to resolve project/item context.");
@@ -1414,25 +1417,27 @@ public class GitHub_Informer_New {
 		return false;
 	}
 
-	public static ProjectItemContext resolveProjectItemContext(String repository, String prNumberRaw, String githubToken, String projectOwnerRaw, String projectNumberRaw, String projectThreadFieldNameRaw)
+	public static ProjectItemContext resolveProjectItemContext(String repository, String prNumberRaw, String githubToken, String projectOwnerRaw, String projectNumberRaw, String projectIdRaw, String projectThreadFieldNameRaw)
 	{
 		try
 		{
 			String owner = defaultIfBlank(projectOwnerRaw, "").trim();
 			String projectNumberText = defaultIfBlank(projectNumberRaw, "").trim();
+			String configuredProjectId = defaultIfBlank(projectIdRaw, "").trim();
 			String fieldName = defaultIfBlank(projectThreadFieldNameRaw, "Cliq Thread ID").trim();
-			if(owner.isBlank() || projectNumberText.isBlank())
+			if(configuredProjectId.isBlank() && (owner.isBlank() || projectNumberText.isBlank()))
 			{
-				debug("Project storage is not configured: missing GITHUB_PROJECT_OWNER or GITHUB_PROJECT_NUMBER.");
+				debug("Project storage is not configured: set GITHUB_PROJECT_ID or both GITHUB_PROJECT_OWNER and GITHUB_PROJECT_NUMBER.");
 				return null;
 			}
 
-			int projectNumber;
 			int prNumber;
+			int projectNumber = -1;
 			try
 			{
-				projectNumber = Integer.parseInt(projectNumberText);
 				prNumber = Integer.parseInt(defaultIfBlank(prNumberRaw, "").trim());
+				if(!projectNumberText.isBlank())
+					projectNumber = Integer.parseInt(projectNumberText);
 			}
 			catch(Exception e)
 			{
@@ -1444,10 +1449,14 @@ public class GitHub_Informer_New {
 			if(repoParts.length != 2)
 				return null;
 
-			String projectId = resolveProjectIdByOwnerAndNumber(githubToken, owner, projectNumber);
+			String projectId = configuredProjectId;
 			if(projectId == null || projectId.isBlank())
 			{
-				System.err.println("Project thread storage skipped: unable to resolve project id for owner/number.");
+				projectId = resolveProjectIdByOwnerAndNumber(githubToken, owner, projectNumber);
+			}
+			if(projectId == null || projectId.isBlank())
+			{
+				System.err.println("Project thread storage skipped: unable to resolve project id.");
 				return null;
 			}
 
@@ -1458,7 +1467,7 @@ public class GitHub_Informer_New {
 				return null;
 			}
 
-			ProjectItemContext existingContext = resolveProjectItemContextFromPullRequestNode(githubToken, pullRequestNodeId, owner, projectNumber, fieldName);
+			ProjectItemContext existingContext = resolveProjectItemContextFromPullRequestNode(githubToken, pullRequestNodeId, owner, projectNumber, projectId, fieldName);
 			if(existingContext != null && existingContext.itemId != null && !existingContext.itemId.isBlank())
 				return existingContext;
 
@@ -1467,7 +1476,7 @@ public class GitHub_Informer_New {
 				return new ProjectItemContext(addedItemId, projectId, "");
 
 			// One more lookup in case PR was already added concurrently.
-			ProjectItemContext contextAfterAdd = resolveProjectItemContextFromPullRequestNode(githubToken, pullRequestNodeId, owner, projectNumber, fieldName);
+			ProjectItemContext contextAfterAdd = resolveProjectItemContextFromPullRequestNode(githubToken, pullRequestNodeId, owner, projectNumber, projectId, fieldName);
 			if(contextAfterAdd != null && contextAfterAdd.itemId != null && !contextAfterAdd.itemId.isBlank())
 				return contextAfterAdd;
 		}
@@ -1482,7 +1491,26 @@ public class GitHub_Informer_New {
 	{
 		try
 		{
-			String query = "query($owner:String!,$projectNumber:Int!){organization(login:$owner){projectV2(number:$projectNumber){id}} user(login:$owner){projectV2(number:$projectNumber){id}}}";
+			String userProjectId = resolveProjectIdFromUser(githubToken, owner, projectNumber);
+			if(userProjectId != null && !userProjectId.isBlank())
+				return userProjectId;
+
+			String orgProjectId = resolveProjectIdFromOrganization(githubToken, owner, projectNumber);
+			if(orgProjectId != null && !orgProjectId.isBlank())
+				return orgProjectId;
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve project id: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static String resolveProjectIdFromUser(String githubToken, String owner, int projectNumber)
+	{
+		try
+		{
+			String query = "query($owner:String!,$projectNumber:Int!){user(login:$owner){projectV2(number:$projectNumber){id}}}";
 			String payload = "{"
 				+ "\"query\":\"" + jsonEscape(query) + "\","
 				+ "\"variables\":{"
@@ -1490,7 +1518,7 @@ public class GitHub_Informer_New {
 				+ "\"projectNumber\":" + projectNumber
 				+ "}}";
 			HttpResult response = postGitHubGraphql(githubToken, payload);
-			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
 				return "";
 			Matcher matcher = Pattern.compile("\\\"projectV2\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\"\\}").matcher(response.body);
 			if(matcher.find())
@@ -1498,7 +1526,32 @@ public class GitHub_Informer_New {
 		}
 		catch(Exception e)
 		{
-			System.err.println("Unable to resolve project id: " + e.getMessage());
+			System.err.println("Unable to resolve user project id: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static String resolveProjectIdFromOrganization(String githubToken, String owner, int projectNumber)
+	{
+		try
+		{
+			String query = "query($owner:String!,$projectNumber:Int!){organization(login:$owner){projectV2(number:$projectNumber){id}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(query) + "\","
+				+ "\"variables\":{"
+				+ "\"owner\":\"" + jsonEscape(owner) + "\","
+				+ "\"projectNumber\":" + projectNumber
+				+ "}}";
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
+				return "";
+			Matcher matcher = Pattern.compile("\\\"projectV2\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\"\\}").matcher(response.body);
+			if(matcher.find())
+				return matcher.group(1);
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve organization project id: " + e.getMessage());
 		}
 		return "";
 	}
@@ -1529,7 +1582,7 @@ public class GitHub_Informer_New {
 		return "";
 	}
 
-	public static ProjectItemContext resolveProjectItemContextFromPullRequestNode(String githubToken, String pullRequestNodeId, String owner, int projectNumber, String fieldName)
+	public static ProjectItemContext resolveProjectItemContextFromPullRequestNode(String githubToken, String pullRequestNodeId, String owner, int projectNumber, String configuredProjectId, String fieldName)
 	{
 		try
 		{
@@ -1548,7 +1601,7 @@ public class GitHub_Informer_New {
 			while(nodeMatcher.find())
 			{
 				String itemId = nodeMatcher.group(1);
-				String projectId = nodeMatcher.group(2);
+				String currentProjectId = nodeMatcher.group(2);
 				int currentProjectNumber;
 				try
 				{
@@ -1559,12 +1612,17 @@ public class GitHub_Informer_New {
 					continue;
 				}
 				String currentOwner = defaultIfBlank(nodeMatcher.group(4), "");
-				if(currentProjectNumber != projectNumber || !owner.equalsIgnoreCase(currentOwner))
+				if(!defaultIfBlank(configuredProjectId, "").isBlank())
+				{
+					if(!configuredProjectId.equals(currentProjectId))
+						continue;
+				}
+				else if(currentProjectNumber != projectNumber || !owner.equalsIgnoreCase(currentOwner))
 					continue;
 				String value = "";
 				if(nodeMatcher.group(5) != null && !"null".equals(nodeMatcher.group(5)))
 					value = jsonUnescape(defaultIfBlank(nodeMatcher.group(6), ""));
-				return new ProjectItemContext(itemId, projectId, value);
+				return new ProjectItemContext(itemId, currentProjectId, value);
 			}
 		}
 		catch(Exception e)
