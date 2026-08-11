@@ -772,11 +772,27 @@ public class GitHub_Informer_New {
 				String pullRequestBaseShaRaw = (String) System.getenv("PULL_REQUEST_BASE_SHA");
 				String pullRequestHeadShaRaw = (String) System.getenv("PULL_REQUEST_HEAD_SHA");
 				String prLabelsRaw = (String) System.getenv("PR_LABELS");
+				// Previous storage mode was PR marker comments ("comment").
+				// Keep default as comment so existing behavior remains backward-compatible.
+				String threadStorageMode = defaultIfBlank((String) System.getenv("CLIQ_THREAD_STORAGE_MODE"), "comment").trim().toLowerCase();
+				String projectOwnerRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_OWNER"), "");
+				String projectNumberRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_NUMBER"), "");
+				String projectThreadFieldIdRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_ID"), "");
+				String projectThreadFieldNameRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_NAME"), "Cliq Thread ID");
 				String prThreadId = null;
 				if(isPrEvent && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
 				{
-				  prThreadId = fetchCliqThreadIdFromPRComments(Repository, prNumber, githubToken);
-				  debug("Fetched existing PR marker threadId=" + prThreadId);
+				  prThreadId = fetchCliqThreadId(
+					  Repository,
+					  prNumber,
+					  githubToken,
+					  threadStorageMode,
+					  projectOwnerRaw,
+					  projectNumberRaw,
+					  projectThreadFieldIdRaw,
+					  projectThreadFieldNameRaw
+				  );
+				  debug("Fetched existing PR threadId=" + prThreadId + ", storageMode=" + threadStorageMode);
 				}
 				String createdThreadId = null;
 
@@ -841,11 +857,20 @@ public class GitHub_Informer_New {
 
 				if(isPrEvent && "opened".equals(ActionRaw) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
 				{
-				  debug("Attempting to create PR marker comment with threadId=" + createdThreadId);
-				  boolean markerSaved = upsertCliqThreadIdComment(Repository, prNumber, githubToken, createdThreadId);
-				  if(!markerSaved)
+				  boolean threadSaved = upsertCliqThreadId(
+					  Repository,
+					  prNumber,
+					  githubToken,
+					  createdThreadId,
+					  threadStorageMode,
+					  projectOwnerRaw,
+					  projectNumberRaw,
+					  projectThreadFieldIdRaw,
+					  projectThreadFieldNameRaw
+				  );
+				  if(!threadSaved)
 				  {
-					System.err.println("PR thread marker not saved: GitHub API rejected marker comment write. Check workflow permissions issues:write/pull-requests:write and token scope.");
+					System.err.println("PR thread marker not saved in any storage backend. Check workflow permissions issues:write/pull-requests:write/projects:write and token scope.");
 				  }
 				}
 				else if(isPrEvent && "opened".equals(ActionRaw) && (createdThreadId == null || createdThreadId.isBlank()))
@@ -1223,6 +1248,34 @@ public class GitHub_Informer_New {
 		return null;
 	}
 
+	public static String fetchCliqThreadId(String repository, String prNumber, String githubToken, String storageMode, String projectOwner, String projectNumberRaw, String projectThreadFieldId, String projectThreadFieldName)
+	{
+		if("project".equalsIgnoreCase(defaultIfBlank(storageMode, "comment")))
+		{
+			String projectThreadId = fetchCliqThreadIdFromProjectField(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectThreadFieldName);
+			if(projectThreadId != null && !projectThreadId.isBlank())
+				return projectThreadId;
+			debug("Project field storage did not return thread id. Falling back to PR marker comment lookup.");
+		}
+		// Previous behavior (disabled): read thread id from PR marker comment.
+		// return fetchCliqThreadIdFromPRComments(repository, prNumber, githubToken);
+		return null;
+	}
+
+	public static boolean upsertCliqThreadId(String repository, String prNumber, String githubToken, String threadId, String storageMode, String projectOwner, String projectNumberRaw, String projectThreadFieldId, String projectThreadFieldName)
+	{
+		if("project".equalsIgnoreCase(defaultIfBlank(storageMode, "comment")))
+		{
+			boolean savedInProject = upsertCliqThreadIdInProjectField(repository, prNumber, githubToken, threadId, projectOwner, projectNumberRaw, projectThreadFieldId, projectThreadFieldName);
+			if(savedInProject)
+				return true;
+			debug("Project field write failed. Falling back to PR marker comment write.");
+		}
+		// Previous behavior (disabled): save thread id as a hidden PR marker comment.
+		// return upsertCliqThreadIdComment(repository, prNumber, githubToken, threadId);
+		return false;
+	}
+
 	public static String fetchCliqThreadIdFromPRComments(String repository, String prNumber, String githubToken)
 	{
 		try
@@ -1286,6 +1339,196 @@ public class GitHub_Informer_New {
 			System.err.println("Unable to save PR thread marker: " + e.getMessage());
 			return false;
 		}
+	}
+
+	public static class ProjectItemContext
+	{
+		public String itemId;
+		public String projectId;
+		public String fieldValue;
+
+		public ProjectItemContext(String itemId, String projectId, String fieldValue)
+		{
+			this.itemId = itemId;
+			this.projectId = projectId;
+			this.fieldValue = fieldValue;
+		}
+	}
+
+	public static String fetchCliqThreadIdFromProjectField(String repository, String prNumber, String githubToken, String projectOwner, String projectNumberRaw, String projectThreadFieldName)
+	{
+		ProjectItemContext context = resolveProjectItemContext(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectThreadFieldName);
+		if(context == null)
+			return null;
+		String value = defaultIfBlank(context.fieldValue, "").trim();
+		if(value.isBlank())
+			return null;
+		debug("Found Cliq thread id in project field storage.");
+		return value;
+	}
+
+	public static boolean upsertCliqThreadIdInProjectField(String repository, String prNumber, String githubToken, String threadId, String projectOwner, String projectNumberRaw, String projectThreadFieldId, String projectThreadFieldName)
+	{
+		try
+		{
+			ProjectItemContext context = resolveProjectItemContext(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectThreadFieldName);
+			if(context == null || context.projectId == null || context.projectId.isBlank() || context.itemId == null || context.itemId.isBlank())
+			{
+				System.err.println("Project thread storage skipped: unable to resolve project/item context.");
+				return false;
+			}
+
+			String fieldId = defaultIfBlank(projectThreadFieldId, "").trim();
+			if(fieldId.isBlank())
+			{
+				fieldId = resolveProjectFieldIdByName(githubToken, context.projectId, projectThreadFieldName);
+			}
+			if(fieldId == null || fieldId.isBlank())
+			{
+				System.err.println("Project thread storage skipped: unable to resolve project field id.");
+				return false;
+			}
+
+			String mutation = "mutation($projectId:ID!,$itemId:ID!,$fieldId:ID!,$value:String!){updateProjectV2ItemFieldValue(input:{projectId:$projectId,itemId:$itemId,fieldId:$fieldId,value:{text:$value}}){projectV2Item{id}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(mutation) + "\"," 
+				+ "\"variables\":{"
+				+ "\"projectId\":\"" + jsonEscape(context.projectId) + "\"," 
+				+ "\"itemId\":\"" + jsonEscape(context.itemId) + "\"," 
+				+ "\"fieldId\":\"" + jsonEscape(fieldId) + "\"," 
+				+ "\"value\":\"" + jsonEscape(threadId) + "\""
+				+ "}}";
+
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status >= 200 && response.status <= 299 && !defaultIfBlank(response.body, "").contains("\"errors\""))
+			{
+				debug("Saved Cliq thread id in GitHub Project custom field.");
+				return true;
+			}
+			System.err.println("Unable to write Cliq thread id to project field: status=" + response.status + ", body=" + preview(response.body));
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to write Cliq thread id to project field: " + e.getMessage());
+		}
+		return false;
+	}
+
+	public static ProjectItemContext resolveProjectItemContext(String repository, String prNumberRaw, String githubToken, String projectOwnerRaw, String projectNumberRaw, String projectThreadFieldNameRaw)
+	{
+		try
+		{
+			String owner = defaultIfBlank(projectOwnerRaw, "").trim();
+			String projectNumberText = defaultIfBlank(projectNumberRaw, "").trim();
+			String fieldName = defaultIfBlank(projectThreadFieldNameRaw, "Cliq Thread ID").trim();
+			if(owner.isBlank() || projectNumberText.isBlank())
+			{
+				debug("Project storage is not configured: missing GITHUB_PROJECT_OWNER or GITHUB_PROJECT_NUMBER.");
+				return null;
+			}
+
+			int projectNumber;
+			int prNumber;
+			try
+			{
+				projectNumber = Integer.parseInt(projectNumberText);
+				prNumber = Integer.parseInt(defaultIfBlank(prNumberRaw, "").trim());
+			}
+			catch(Exception e)
+			{
+				System.err.println("Project storage parse error: invalid project or PR number.");
+				return null;
+			}
+
+			String[] repoParts = defaultIfBlank(repository, "").split("/");
+			if(repoParts.length != 2)
+				return null;
+
+			String query = "query($owner:String!,$repo:String!,$prNumber:Int!,$fieldName:String!){repository(owner:$owner,name:$repo){pullRequest(number:$prNumber){projectItems(first:100){nodes{id project{id number owner{login}} fieldValueByName(name:$fieldName){... on ProjectV2ItemFieldTextValue{text}}}}}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(query) + "\"," 
+				+ "\"variables\":{"
+				+ "\"owner\":\"" + jsonEscape(repoParts[0]) + "\"," 
+				+ "\"repo\":\"" + jsonEscape(repoParts[1]) + "\"," 
+				+ "\"prNumber\":" + prNumber + ","
+				+ "\"fieldName\":\"" + jsonEscape(fieldName) + "\""
+				+ "}}";
+
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+			{
+				debug("Project item context query failed. status=" + response.status + ", bodyPreview=" + preview(response.body));
+				return null;
+			}
+
+			Matcher nodeMatcher = Pattern.compile("\\{\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"project\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"number\\\":(\\d+),\\\"owner\\\":\\{\\\"login\\\":\\\"([^\\\"]+)\\\"\\}\\},\\\"fieldValueByName\\\":(null|\\{\\\"text\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"[^\\}]*\\})\\}", Pattern.DOTALL).matcher(response.body);
+			while(nodeMatcher.find())
+			{
+				String itemId = nodeMatcher.group(1);
+				String projectId = nodeMatcher.group(2);
+				int currentProjectNumber;
+				try
+				{
+					currentProjectNumber = Integer.parseInt(nodeMatcher.group(3));
+				}
+				catch(Exception e)
+				{
+					continue;
+				}
+				String currentOwner = defaultIfBlank(nodeMatcher.group(4), "");
+				if(currentProjectNumber != projectNumber || !owner.equalsIgnoreCase(currentOwner))
+					continue;
+				String value = "";
+				if(nodeMatcher.group(5) != null && !"null".equals(nodeMatcher.group(5)))
+				{
+					value = jsonUnescape(defaultIfBlank(nodeMatcher.group(6), ""));
+				}
+				return new ProjectItemContext(itemId, projectId, value);
+			}
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve project item context: " + e.getMessage());
+		}
+		return null;
+	}
+
+	public static String resolveProjectFieldIdByName(String githubToken, String projectId, String fieldNameRaw)
+	{
+		try
+		{
+			String fieldName = defaultIfBlank(fieldNameRaw, "Cliq Thread ID").trim();
+			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name}}}}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(query) + "\"," 
+				+ "\"variables\":{\"projectId\":\"" + jsonEscape(projectId) + "\"}}";
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+				return "";
+
+			Matcher matcher = Pattern.compile("\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"name\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"").matcher(response.body);
+			while(matcher.find())
+			{
+				String id = matcher.group(1);
+				String name = jsonUnescape(defaultIfBlank(matcher.group(2), ""));
+				if(id.startsWith("PVTF_") && fieldName.equalsIgnoreCase(name))
+					return id;
+			}
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve project field id: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static HttpResult postGitHubGraphql(String githubToken, String payload) throws IOException
+	{
+		HashMap<String, String> headers = new HashMap<String, String>();
+		headers.put("Accept", "application/vnd.github+json");
+		headers.put("Authorization", "Bearer " + githubToken);
+		headers.put("Content-Type", "application/json");
+		return sendHttpRequest("POST", "https://api.github.com/graphql", payload, headers);
 	}
 
 	public static class AiReviewDecision
