@@ -1963,6 +1963,7 @@ public class GitHub_Informer_New {
 				diffHeaders.put("Accept", "application/vnd.github.v3.diff");
 				diffHeaders.put("Authorization", "Bearer " + githubToken);
 				HttpResult diffUrlResponse = sendHttpRequest("GET", pullRequestDiffUrl, null, diffHeaders);
+				debug("AI diff fetch via pullRequestDiffUrl status=" + diffUrlResponse.status);
 				if(diffUrlResponse.status >= 200 && diffUrlResponse.status <= 299 && diffUrlResponse.body != null && !diffUrlResponse.body.isBlank())
 					return diffUrlResponse.body;
 			}
@@ -1974,6 +1975,7 @@ public class GitHub_Informer_New {
 				compareHeaders.put("Authorization", "Bearer " + githubToken);
 				String compareUrl = "https://api.github.com/repos/" + repository + "/compare/" + pullRequestBaseSha + "..." + pullRequestHeadSha;
 				HttpResult compareResponse = sendHttpRequest("GET", compareUrl, null, compareHeaders);
+				debug("AI diff fetch via compare API status=" + compareResponse.status);
 				if(compareResponse.status >= 200 && compareResponse.status <= 299 && compareResponse.body != null && !compareResponse.body.isBlank())
 					return compareResponse.body;
 			}
@@ -1982,14 +1984,76 @@ public class GitHub_Informer_New {
 			headers.put("Accept", "application/vnd.github.v3.diff");
 			headers.put("Authorization", "Bearer " + githubToken);
 			HttpResult response = sendHttpRequest("GET", "https://api.github.com/repos/" + repository + "/pulls/" + prNumber, null, headers);
+			debug("AI diff fetch via pulls API (diff accept) status=" + response.status);
 			if(response.status >= 200 && response.status <= 299)
 				return response.body;
+
+			String filesApiDiff = fetchPullRequestDiffFromFilesApi(repository, prNumber, githubToken);
+			if(filesApiDiff != null && !filesApiDiff.isBlank())
+				return filesApiDiff;
 		}
 		catch(Exception e)
 		{
 			System.err.println("Unable to fetch PR diff: " + e.getMessage());
 		}
 		return "";
+	}
+
+	public static String fetchPullRequestDiffFromFilesApi(String repository, String prNumber, String githubToken)
+	{
+		try
+		{
+			HashMap<String, String> headers = new HashMap<String, String>();
+			headers.put("Accept", "application/vnd.github+json");
+			headers.put("Authorization", "Bearer " + githubToken);
+			String endpoint = "https://api.github.com/repos/" + repository + "/pulls/" + prNumber + "/files?per_page=100";
+			HttpResult response = sendHttpRequest("GET", endpoint, null, headers);
+			debug("AI diff fetch via pulls files API status=" + response.status);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
+				return "";
+
+			String synthesizedDiff = synthesizeUnifiedDiffFromFilesResponse(response.body);
+			if(synthesizedDiff == null || synthesizedDiff.isBlank())
+				return "";
+			return synthesizedDiff;
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to fetch PR files for diff synthesis: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static String synthesizeUnifiedDiffFromFilesResponse(String body)
+	{
+		if(body == null || body.isBlank())
+			return "";
+		Matcher entryMatcher = Pattern.compile("\\\"filename\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\".*?\\\"status\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\".*?(?:\\\"patch\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\")?", Pattern.DOTALL).matcher(body);
+		StringBuilder sb = new StringBuilder();
+		int count = 0;
+		while(entryMatcher.find())
+		{
+			String fileName = jsonUnescape(defaultIfBlank(entryMatcher.group(1), ""));
+			String status = jsonUnescape(defaultIfBlank(entryMatcher.group(2), ""));
+			String patch = jsonUnescape(defaultIfBlank(entryMatcher.group(3), ""));
+			if(fileName.isBlank())
+				continue;
+			count++;
+			sb.append("diff --git a/").append(fileName).append(" b/").append(fileName).append("\n");
+			if("added".equalsIgnoreCase(status))
+				sb.append("new file mode 100644\n");
+			if("removed".equalsIgnoreCase(status))
+				sb.append("deleted file mode 100644\n");
+			sb.append("--- a/").append(fileName).append("\n");
+			sb.append("+++ b/").append(fileName).append("\n");
+			if(patch != null && !patch.isBlank())
+				sb.append(patch).append("\n");
+			else
+				sb.append("@@\n").append("[No textual patch available from GitHub files API]\n");
+		}
+		if(count == 0)
+			return "";
+		return sb.toString();
 	}
 
 	public static String buildAiPrompt(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String diff)
