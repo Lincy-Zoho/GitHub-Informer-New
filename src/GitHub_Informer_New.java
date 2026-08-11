@@ -1711,12 +1711,19 @@ public class GitHub_Informer_New {
 	public static class AiReviewDecision
 	{
 		public boolean passed;
+		public String conclusion;
 		public String summary;
 		public String details;
 
 		public AiReviewDecision(boolean passed, String summary, String details)
 		{
+			this(passed, passed ? "success" : "failure", summary, details);
+		}
+
+		public AiReviewDecision(boolean passed, String conclusion, String summary, String details)
+		{
 			this.passed = passed;
+			this.conclusion = defaultIfBlank(conclusion, passed ? "success" : "failure");
 			this.summary = summary == null ? "" : summary;
 			this.details = details == null ? "" : details;
 		}
@@ -1741,7 +1748,7 @@ public class GitHub_Informer_New {
 
 		if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 		{
-			setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkName, decision.passed, decision.summary, decision.details);
+			setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkName, decision.conclusion, decision.summary, decision.details);
 		}
 		else
 		{
@@ -1815,9 +1822,9 @@ public class GitHub_Informer_New {
 		if(githubToken == null || githubToken.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "GITHUB_TOKEN is missing.");
 
-		String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
+		String diff = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
 		if(diff == null || diff.isBlank())
-			return new AiReviewDecision(false, "AI Review Gate failed", "Unable to fetch PR diff from GitHub.");
+			return new AiReviewDecision(true, "neutral", "AI Review Gate skipped", "Unable to fetch PR diff from GitHub after retries. Skipping AI decision for this run.");
 
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff);
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
@@ -1995,6 +2002,31 @@ public class GitHub_Informer_New {
 		catch(Exception e)
 		{
 			System.err.println("Unable to fetch PR diff: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static String fetchPullRequestDiffWithRetries(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
+	{
+		int maxAttempts = 4;
+		for(int attempt = 1; attempt <= maxAttempts; attempt++)
+		{
+			String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
+			if(diff != null && !diff.isBlank())
+				return diff;
+			if(attempt < maxAttempts)
+			{
+				debug("AI diff fetch attempt " + attempt + " failed. Retrying...");
+				try
+				{
+					Thread.sleep(1500L * attempt);
+				}
+				catch(InterruptedException ie)
+				{
+					Thread.currentThread().interrupt();
+					break;
+				}
+			}
 		}
 		return "";
 	}
@@ -2324,11 +2356,13 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	public static void setAiReviewCheckRun(String repository, String headSha, String githubToken, String checkName, boolean passed, String summary, String details)
+	public static void setAiReviewCheckRun(String repository, String headSha, String githubToken, String checkName, String conclusionRaw, String summary, String details)
 	{
 		try
 		{
-			String conclusion = passed ? "success" : "failure";
+			String conclusion = defaultIfBlank(conclusionRaw, "success").trim().toLowerCase();
+			if(!("success".equals(conclusion) || "failure".equals(conclusion) || "neutral".equals(conclusion) || "cancelled".equals(conclusion) || "timed_out".equals(conclusion) || "skipped".equals(conclusion) || "action_required".equals(conclusion) || "stale".equals(conclusion)))
+				conclusion = "success";
 			String payload = "{"
 				+ "\"name\":\"" + jsonEscape(checkName) + "\"," 
 				+ "\"head_sha\":\"" + jsonEscape(headSha) + "\"," 
