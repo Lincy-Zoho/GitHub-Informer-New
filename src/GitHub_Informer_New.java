@@ -1435,6 +1435,10 @@ public class GitHub_Informer_New {
 			{
 				fieldId = resolveProjectFieldIdByName(githubToken, context.projectId, projectThreadFieldName);
 			}
+			else if(!fieldId.startsWith("PVTF_") && !fieldId.startsWith("PVTSSF_") && !fieldId.startsWith("PVTIF_"))
+			{
+				fieldId = resolveProjectFieldIdByIdentifier(githubToken, context.projectId, fieldId, projectThreadFieldName);
+			}
 			if(fieldId == null || fieldId.isBlank())
 			{
 				String reason = "Project thread storage skipped: unable to resolve project field id.";
@@ -1560,6 +1564,56 @@ public class GitHub_Informer_New {
 		catch(Exception e)
 		{
 			System.err.println("Unable to resolve project id: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static String resolveProjectFieldIdByIdentifier(String githubToken, String projectId, String fieldIdentifierRaw, String fieldNameRaw)
+	{
+		try
+		{
+			String fieldIdentifier = defaultIfBlank(fieldIdentifierRaw, "").trim();
+			String fieldName = defaultIfBlank(fieldNameRaw, "Cliq Thread ID").trim();
+			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId}}}}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(query) + "\"," 
+				+ "\"variables\":{\"projectId\":\"" + jsonEscape(projectId) + "\"}}";
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+				return "";
+
+			Matcher matcher = Pattern.compile("\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"name\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"").matcher(response.body);
+			ArrayList<String> availableFields = new ArrayList<String>();
+			String fallbackByName = "";
+			while(matcher.find())
+			{
+				String id = matcher.group(1);
+				String name = jsonUnescape(defaultIfBlank(matcher.group(2), ""));
+				if(name != null && !name.isBlank())
+					availableFields.add(name + " [" + id + "]");
+				if(fieldIdentifier.equalsIgnoreCase(id))
+					return id;
+				if(fieldName.equalsIgnoreCase(defaultIfBlank(name, "").trim()) && fallbackByName.isBlank())
+					fallbackByName = id;
+
+				int windowStart = Math.max(0, matcher.start() - 160);
+				int windowEnd = Math.min(response.body.length(), matcher.end() + 220);
+				String window = response.body.substring(windowStart, windowEnd);
+				Matcher dbMatcher = Pattern.compile("\\\"databaseId\\\":(\\d+)").matcher(window);
+				if(dbMatcher.find() && fieldIdentifier.equals(defaultIfBlank(dbMatcher.group(1), "").trim()))
+					return id;
+			}
+
+			if(!fallbackByName.isBlank())
+			{
+				debug("Project field identifier not found. Falling back to name='" + fieldName + "'.");
+				return fallbackByName;
+			}
+			debug("Project field identifier not found. Requested='" + fieldIdentifier + "', available=" + availableFields.toString());
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve project field id by identifier: " + e.getMessage());
 		}
 		return "";
 	}
