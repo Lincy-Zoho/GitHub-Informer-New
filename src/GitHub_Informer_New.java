@@ -885,8 +885,7 @@ public class GitHub_Informer_New {
 					String warningMessage = "### Cliq Thread Storage Warning\n\n"
 						+ "GitHub Informer could not store the Cliq thread id in the configured Project custom field.\n\n"
 						+ "**Reason:** " + failureReason + "\n\n"
-						+ "Project-only mode is enabled, so marker comment fallback is disabled.\n\n"
-						+ "Please fix the Project field configuration/permissions and rerun.";
+						+ "Please verify the custom field name and project identifier in your workflow YAML, then rerun.";
 					if(githubToken != null && !githubToken.isBlank())
 						postPullRequestComment(Repository, prNumber, githubToken, warningMessage);
 				  }
