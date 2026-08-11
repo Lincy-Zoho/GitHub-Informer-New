@@ -1444,22 +1444,105 @@ public class GitHub_Informer_New {
 			if(repoParts.length != 2)
 				return null;
 
-			String query = "query($owner:String!,$repo:String!,$prNumber:Int!,$fieldName:String!){repository(owner:$owner,name:$repo){pullRequest(number:$prNumber){projectItems(first:100){nodes{id project{id number owner{login}} fieldValueByName(name:$fieldName){... on ProjectV2ItemFieldTextValue{text}}}}}}}";
-			String payload = "{"
-				+ "\"query\":\"" + jsonEscape(query) + "\"," 
-				+ "\"variables\":{"
-				+ "\"owner\":\"" + jsonEscape(repoParts[0]) + "\"," 
-				+ "\"repo\":\"" + jsonEscape(repoParts[1]) + "\"," 
-				+ "\"prNumber\":" + prNumber + ","
-				+ "\"fieldName\":\"" + jsonEscape(fieldName) + "\""
-				+ "}}";
-
-			HttpResult response = postGitHubGraphql(githubToken, payload);
-			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+			String projectId = resolveProjectIdByOwnerAndNumber(githubToken, owner, projectNumber);
+			if(projectId == null || projectId.isBlank())
 			{
-				debug("Project item context query failed. status=" + response.status + ", bodyPreview=" + preview(response.body));
+				System.err.println("Project thread storage skipped: unable to resolve project id for owner/number.");
 				return null;
 			}
+
+			String pullRequestNodeId = resolvePullRequestNodeId(githubToken, repoParts[0], repoParts[1], prNumber);
+			if(pullRequestNodeId == null || pullRequestNodeId.isBlank())
+			{
+				System.err.println("Project thread storage skipped: unable to resolve pull request node id.");
+				return null;
+			}
+
+			ProjectItemContext existingContext = resolveProjectItemContextFromPullRequestNode(githubToken, pullRequestNodeId, owner, projectNumber, fieldName);
+			if(existingContext != null && existingContext.itemId != null && !existingContext.itemId.isBlank())
+				return existingContext;
+
+			String addedItemId = addPullRequestToProject(githubToken, projectId, pullRequestNodeId);
+			if(addedItemId != null && !addedItemId.isBlank())
+				return new ProjectItemContext(addedItemId, projectId, "");
+
+			// One more lookup in case PR was already added concurrently.
+			ProjectItemContext contextAfterAdd = resolveProjectItemContextFromPullRequestNode(githubToken, pullRequestNodeId, owner, projectNumber, fieldName);
+			if(contextAfterAdd != null && contextAfterAdd.itemId != null && !contextAfterAdd.itemId.isBlank())
+				return contextAfterAdd;
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve project item context: " + e.getMessage());
+		}
+		return null;
+	}
+
+	public static String resolveProjectIdByOwnerAndNumber(String githubToken, String owner, int projectNumber)
+	{
+		try
+		{
+			String query = "query($owner:String!,$projectNumber:Int!){organization(login:$owner){projectV2(number:$projectNumber){id}} user(login:$owner){projectV2(number:$projectNumber){id}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(query) + "\","
+				+ "\"variables\":{"
+				+ "\"owner\":\"" + jsonEscape(owner) + "\","
+				+ "\"projectNumber\":" + projectNumber
+				+ "}}";
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+				return "";
+			Matcher matcher = Pattern.compile("\\\"projectV2\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\"\\}").matcher(response.body);
+			if(matcher.find())
+				return matcher.group(1);
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve project id: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static String resolvePullRequestNodeId(String githubToken, String repoOwner, String repoName, int prNumber)
+	{
+		try
+		{
+			String query = "query($owner:String!,$repo:String!,$prNumber:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$prNumber){id}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(query) + "\","
+				+ "\"variables\":{"
+				+ "\"owner\":\"" + jsonEscape(repoOwner) + "\","
+				+ "\"repo\":\"" + jsonEscape(repoName) + "\","
+				+ "\"prNumber\":" + prNumber
+				+ "}}";
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+				return "";
+			Matcher matcher = Pattern.compile("\\\"pullRequest\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\"").matcher(response.body);
+			if(matcher.find())
+				return matcher.group(1);
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve pull request node id: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static ProjectItemContext resolveProjectItemContextFromPullRequestNode(String githubToken, String pullRequestNodeId, String owner, int projectNumber, String fieldName)
+	{
+		try
+		{
+			String query = "query($prId:ID!,$fieldName:String!){node(id:$prId){... on PullRequest{projectItems(first:100){nodes{id project{id number owner{login}} fieldValueByName(name:$fieldName){... on ProjectV2ItemFieldTextValue{text}}}}}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(query) + "\","
+				+ "\"variables\":{"
+				+ "\"prId\":\"" + jsonEscape(pullRequestNodeId) + "\","
+				+ "\"fieldName\":\"" + jsonEscape(fieldName) + "\""
+				+ "}}";
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+				return null;
 
 			Matcher nodeMatcher = Pattern.compile("\\{\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"project\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"number\\\":(\\d+),\\\"owner\\\":\\{\\\"login\\\":\\\"([^\\\"]+)\\\"\\}\\},\\\"fieldValueByName\\\":(null|\\{\\\"text\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"[^\\}]*\\})\\}", Pattern.DOTALL).matcher(response.body);
 			while(nodeMatcher.find())
@@ -1480,17 +1563,45 @@ public class GitHub_Informer_New {
 					continue;
 				String value = "";
 				if(nodeMatcher.group(5) != null && !"null".equals(nodeMatcher.group(5)))
-				{
 					value = jsonUnescape(defaultIfBlank(nodeMatcher.group(6), ""));
-				}
 				return new ProjectItemContext(itemId, projectId, value);
 			}
 		}
 		catch(Exception e)
 		{
-			System.err.println("Unable to resolve project item context: " + e.getMessage());
+			System.err.println("Unable to resolve project item context from PR node: " + e.getMessage());
 		}
 		return null;
+	}
+
+	public static String addPullRequestToProject(String githubToken, String projectId, String pullRequestNodeId)
+	{
+		try
+		{
+			String mutation = "mutation($projectId:ID!,$contentId:ID!){addProjectV2ItemById(input:{projectId:$projectId,contentId:$contentId}){item{id}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(mutation) + "\","
+				+ "\"variables\":{"
+				+ "\"projectId\":\"" + jsonEscape(projectId) + "\","
+				+ "\"contentId\":\"" + jsonEscape(pullRequestNodeId) + "\""
+				+ "}}";
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
+				return "";
+			if(response.body.contains("\"errors\""))
+			{
+				debug("addProjectV2ItemById returned errors. It may already exist or token lacks project permission. bodyPreview=" + preview(response.body));
+				return "";
+			}
+			Matcher matcher = Pattern.compile("\\\"item\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\"\\}").matcher(response.body);
+			if(matcher.find())
+				return matcher.group(1);
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to add pull request to project: " + e.getMessage());
+		}
+		return "";
 	}
 
 	public static String resolveProjectFieldIdByName(String githubToken, String projectId, String fieldNameRaw)
