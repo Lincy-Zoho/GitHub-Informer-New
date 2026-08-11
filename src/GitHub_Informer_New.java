@@ -1586,7 +1586,7 @@ public class GitHub_Informer_New {
 	{
 		try
 		{
-			String query = "query($prId:ID!,$fieldName:String!){node(id:$prId){... on PullRequest{projectItems(first:100){nodes{id project{id number owner{login}} fieldValueByName(name:$fieldName){... on ProjectV2ItemFieldTextValue{text}}}}}}}";
+			String query = "query($prId:ID!,$fieldName:String!){node(id:$prId){... on PullRequest{projectItems(first:100){nodes{id project{id number} fieldValueByName(name:$fieldName){... on ProjectV2ItemFieldTextValue{text}}}}}}}";
 			String payload = "{"
 				+ "\"query\":\"" + jsonEscape(query) + "\","
 				+ "\"variables\":{"
@@ -1597,7 +1597,7 @@ public class GitHub_Informer_New {
 			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
 				return null;
 
-			Matcher nodeMatcher = Pattern.compile("\\{\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"project\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"number\\\":(\\d+),\\\"owner\\\":\\{\\\"login\\\":\\\"([^\\\"]+)\\\"\\}\\},\\\"fieldValueByName\\\":(null|\\{\\\"text\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"[^\\}]*\\})\\}", Pattern.DOTALL).matcher(response.body);
+			Matcher nodeMatcher = Pattern.compile("\\{\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"project\\\":\\{\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"number\\\":(\\d+)\\},\\\"fieldValueByName\\\":(null|\\{\\\"text\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"[^\\}]*\\})\\}", Pattern.DOTALL).matcher(response.body);
 			while(nodeMatcher.find())
 			{
 				String itemId = nodeMatcher.group(1);
@@ -1611,17 +1611,16 @@ public class GitHub_Informer_New {
 				{
 					continue;
 				}
-				String currentOwner = defaultIfBlank(nodeMatcher.group(4), "");
 				if(!defaultIfBlank(configuredProjectId, "").isBlank())
 				{
 					if(!configuredProjectId.equals(currentProjectId))
 						continue;
 				}
-				else if(currentProjectNumber != projectNumber || !owner.equalsIgnoreCase(currentOwner))
+				else if(currentProjectNumber != projectNumber)
 					continue;
 				String value = "";
-				if(nodeMatcher.group(5) != null && !"null".equals(nodeMatcher.group(5)))
-					value = jsonUnescape(defaultIfBlank(nodeMatcher.group(6), ""));
+				if(nodeMatcher.group(4) != null && !"null".equals(nodeMatcher.group(4)))
+					value = jsonUnescape(defaultIfBlank(nodeMatcher.group(5), ""));
 				return new ProjectItemContext(itemId, currentProjectId, value);
 			}
 		}
