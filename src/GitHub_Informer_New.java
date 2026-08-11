@@ -764,7 +764,7 @@ public class GitHub_Informer_New {
 					prNumber = (String) System.getenv("ISSUE_NUMBER");
 				}
 				String githubToken = (String) System.getenv("GITHUB_TOKEN");
-				debug("EventNameRaw=" + eventNameRaw + ", ActionRaw=" + ActionRaw + ", isPrEvent=" + isPrEvent + ", isPullRequestCommentEvent=" + isPullRequestCommentEvent + ", isPullRequestReviewEvent=" + isPullRequestReviewEvent + ", isPullRequestReviewCommentEvent=" + isPullRequestReviewCommentEvent + ", prNumber=" + prNumber + ", hasGithubToken=" + (githubToken != null && !githubToken.isBlank()));
+				String projectTokenRaw = (String) System.getenv("PROJECT_TOKEN");
 				String pullRequestTitleRaw = (String) System.getenv("PULL_REQUEST_TITLE");
 				String pullRequestBodyRaw = (String) System.getenv("PULL_REQUEST_BODY");
 				String pullRequestUrlRaw = (String) System.getenv("PULL_REQUEST_URL");
@@ -780,13 +780,19 @@ public class GitHub_Informer_New {
 				String projectIdRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_ID"), "");
 				String projectThreadFieldIdRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_ID"), "");
 				String projectThreadFieldNameRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_NAME"), "Cliq Thread ID");
+				String storageToken = githubToken;
+				if("project".equals(threadStorageMode))
+				{
+					storageToken = defaultIfBlank(projectTokenRaw, githubToken);
+				}
+				debug("EventNameRaw=" + eventNameRaw + ", ActionRaw=" + ActionRaw + ", isPrEvent=" + isPrEvent + ", isPullRequestCommentEvent=" + isPullRequestCommentEvent + ", isPullRequestReviewEvent=" + isPullRequestReviewEvent + ", isPullRequestReviewCommentEvent=" + isPullRequestReviewCommentEvent + ", prNumber=" + prNumber + ", hasGithubToken=" + (githubToken != null && !githubToken.isBlank()) + ", hasProjectToken=" + (projectTokenRaw != null && !projectTokenRaw.isBlank()) + ", storageMode=" + threadStorageMode + ", hasStorageToken=" + (storageToken != null && !storageToken.isBlank()));
 				String prThreadId = null;
-				if(isPrEvent && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
+				if(isPrEvent && prNumber != null && !prNumber.isBlank() && storageToken != null && !storageToken.isBlank())
 				{
 				  prThreadId = fetchCliqThreadId(
 					  Repository,
 					  prNumber,
-					  githubToken,
+					  storageToken,
 					  threadStorageMode,
 					  projectOwnerRaw,
 					  projectNumberRaw,
@@ -857,12 +863,12 @@ public class GitHub_Informer_New {
 				    ERROR_MESSAGE = responseContent.toString();
 				}
 
-				if(isPrEvent && (prThreadId == null || prThreadId.isBlank()) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
+				if(isPrEvent && (prThreadId == null || prThreadId.isBlank()) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && storageToken != null && !storageToken.isBlank())
 				{
 				  boolean threadSaved = upsertCliqThreadId(
 					  Repository,
 					  prNumber,
-					  githubToken,
+					  storageToken,
 					  createdThreadId,
 					  threadStorageMode,
 					  projectOwnerRaw,
@@ -1673,13 +1679,18 @@ public class GitHub_Informer_New {
 				return "";
 
 			Matcher matcher = Pattern.compile("\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"name\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"").matcher(response.body);
+			ArrayList<String> availableFields = new ArrayList<String>();
 			while(matcher.find())
 			{
 				String id = matcher.group(1);
 				String name = jsonUnescape(defaultIfBlank(matcher.group(2), ""));
-				if(id.startsWith("PVTF_") && fieldName.equalsIgnoreCase(name))
+				if(name != null && !name.isBlank())
+					availableFields.add(name + " [" + id + "]");
+				// ProjectV2 field ids are not always prefixed consistently across field types.
+				if(fieldName.equalsIgnoreCase(defaultIfBlank(name, "").trim()))
 					return id;
 			}
+			debug("Project field name not found. Requested='" + fieldName + "', available=" + availableFields.toString());
 		}
 		catch(Exception e)
 		{
