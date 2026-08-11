@@ -46,15 +46,6 @@ public class GitHub_Informer_New {
 			boolean useCliqBotAuth = isCliqBotAuthEndpoint(CliqChannelLink);
 			if(isCliqWebhookEndpoint(CliqChannelLink) || useCliqBotAuth)
 			  INVALID_ENDPOINT_ERROR = false;
-			if(useCliqBotAuth)
-			{
-				String cliqAuthToken = defaultIfBlank((String) System.getenv("CLIQ_AUTH_TOKEN"), "").trim();
-				if(cliqAuthToken.isBlank())
-				{
-					ERROR_MESSAGE = "Invalid Endpoint. Bot-auth mode requires CLIQ_AUTH_TOKEN.";
-					return;
-				}
-			}
 			CustomMessage = (String) System.getenv("CUSTOM_MESSAGE");
 			String Actor = (String) System.getenv("GITHUB_ACTOR");
 			String ActorURL = ServerURL + Actor;
@@ -941,7 +932,7 @@ public class GitHub_Informer_New {
 			if(status == 204 || status == 200 || status == 201)
 			  MESSAGE_SEND_FAILURE_ERROR = false;
 			if(INVALID_ENDPOINT_ERROR)
-			  ERROR_MESSAGE = "Invalid Endpoint. Endpoint must be either <Zoho Cliq Channel API Endpoint>?zapikey=<Zoho Cliq Webhook Token> or https://cliq.zoho.com/api/v2/channelsbyname/<CHANNEL_UNIQUE_NAME>/message?bot_unique_name=<BOT_UNIQUE_NAME> with CLIQ_AUTH_TOKEN.";
+			  ERROR_MESSAGE = "Invalid Endpoint. Endpoint must be either <Zoho Cliq Channel API Endpoint>?zapikey=<Zoho Cliq Webhook Token> or https://cliq.zoho.com/api/v2/channelsbyname/<CHANNEL_UNIQUE_NAME>/message?bot_unique_name=<BOT_UNIQUE_NAME>&zapikey=<Zoho Cliq Webhook Token>.";
 			else if(GITHUB_ERROR)
 			  ERROR_MESSAGE = "Environmental Variable GITHUB_OUTPUT missing";
 			else if(MESSAGE_SEND_FAILURE_ERROR)
@@ -950,7 +941,7 @@ public class GitHub_Informer_New {
 			  ERROR_MESSAGE = "GitHub Informer executed Successfully";
 			writeGithubOutput(status,ERROR_MESSAGE);
 		}  catch (MalformedURLException e) {
-			ERROR_MESSAGE = "Invalid Endpoint URL. Please provide channel-endpoint as either <Cliq Channel API Endpoint>?zapikey=<Cliq Webhook Token> or /channelsbyname/<CHANNEL_UNIQUE_NAME>/message?bot_unique_name=<BOT_UNIQUE_NAME>.";
+			ERROR_MESSAGE = "Invalid Endpoint URL. Please provide channel-endpoint as either <Cliq Channel API Endpoint>?zapikey=<Cliq Webhook Token> or /channelsbyname/<CHANNEL_UNIQUE_NAME>/message?bot_unique_name=<BOT_UNIQUE_NAME>&zapikey=<Cliq Webhook Token>.";
 			e.printStackTrace();
 		} catch (IOException e) {
 			ERROR_MESSAGE = "I/O Error while sending message to Cliq: " + e.getMessage();
@@ -1071,12 +1062,6 @@ public class GitHub_Informer_New {
 		HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
 		connection.setRequestMethod("POST");
 		connection.setRequestProperty("Content-Type", "application/json");
-		if(isCliqBotAuthEndpoint(endpoint))
-		{
-			String cliqAuthToken = defaultIfBlank((String) System.getenv("CLIQ_AUTH_TOKEN"), "").trim();
-			if(!cliqAuthToken.isBlank())
-				connection.setRequestProperty("Authorization", "Bearer " + cliqAuthToken);
-		}
 		connection.setDoOutput(true);
 		try (OutputStream os = connection.getOutputStream())
 		{
@@ -1098,7 +1083,7 @@ public class GitHub_Informer_New {
 	public static boolean isCliqBotAuthEndpoint(String endpoint)
 	{
 		String value = defaultIfBlank(endpoint, "");
-		return value.contains("https://cliq.zoho") && value.contains("/api/v2/channelsbyname/") && value.contains("/message") && value.contains("bot_unique_name=");
+		return value.contains("https://cliq.zoho") && value.contains("/api/v2/channelsbyname/") && value.contains("/message") && value.contains("bot_unique_name=") && value.contains("zapikey=");
 	}
 
 	public static HttpResult sendHttpRequest(String method, String endpoint, String payload, Map<String, String> headers) throws IOException
