@@ -1259,10 +1259,9 @@ public class GitHub_Informer_New {
 			if(projectThreadId != null && !projectThreadId.isBlank())
 				return projectThreadId;
 			debug("Project field storage did not return thread id. Falling back to PR marker comment lookup.");
+			return fetchCliqThreadIdFromPRComments(repository, prNumber, githubToken);
 		}
-		// Previous behavior (disabled): read thread id from PR marker comment.
-		// return fetchCliqThreadIdFromPRComments(repository, prNumber, githubToken);
-		return null;
+		return fetchCliqThreadIdFromPRComments(repository, prNumber, githubToken);
 	}
 
 	public static boolean upsertCliqThreadId(String repository, String prNumber, String githubToken, String threadId, String storageMode, String projectOwner, String projectNumberRaw, String projectIdRaw, String projectThreadFieldId, String projectThreadFieldName)
@@ -1273,10 +1272,9 @@ public class GitHub_Informer_New {
 			if(savedInProject)
 				return true;
 			debug("Project field write failed. Falling back to PR marker comment write.");
+			return upsertCliqThreadIdComment(repository, prNumber, githubToken, threadId);
 		}
-		// Previous behavior (disabled): save thread id as a hidden PR marker comment.
-		// return upsertCliqThreadIdComment(repository, prNumber, githubToken, threadId);
-		return false;
+		return upsertCliqThreadIdComment(repository, prNumber, githubToken, threadId);
 	}
 
 	public static String fetchCliqThreadIdFromPRComments(String repository, String prNumber, String githubToken)
