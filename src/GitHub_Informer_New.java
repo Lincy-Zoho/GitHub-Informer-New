@@ -43,8 +43,18 @@ public class GitHub_Informer_New {
 				return;
 			}
 			String CliqChannelLink = args[0];
-			if(CliqChannelLink.contains("message") && CliqChannelLink.contains("https://cliq.zoho") && CliqChannelLink.contains("/api/v2/") && CliqChannelLink.contains("?zapikey="))
+			boolean useCliqBotAuth = isCliqBotAuthEndpoint(CliqChannelLink);
+			if(isCliqWebhookEndpoint(CliqChannelLink) || useCliqBotAuth)
 			  INVALID_ENDPOINT_ERROR = false;
+			if(useCliqBotAuth)
+			{
+				String cliqAuthToken = defaultIfBlank((String) System.getenv("CLIQ_AUTH_TOKEN"), "").trim();
+				if(cliqAuthToken.isBlank())
+				{
+					ERROR_MESSAGE = "Invalid Endpoint. Bot-auth mode requires CLIQ_AUTH_TOKEN.";
+					return;
+				}
+			}
 			CustomMessage = (String) System.getenv("CUSTOM_MESSAGE");
 			String Actor = (String) System.getenv("GITHUB_ACTOR");
 			String ActorURL = ServerURL + Actor;
@@ -814,7 +824,7 @@ public class GitHub_Informer_New {
 					ArrayList<String> threadMessageIdCandidates = buildReplyToCandidates(prThreadId);
 					for(String threadMessageIdCandidate : threadMessageIdCandidates)
 					{
-						HttpResult threadedResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, threadMessageIdCandidate));
+						HttpResult threadedResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, threadMessageIdCandidate, useCliqBotAuth));
 						status = threadedResult.status;
 						localResponse = threadedResult.body;
 						debug("Cliq threaded post status=" + status + ", threadMessageIdCandidate=" + threadMessageIdCandidate + ", responsePreview=" + preview(localResponse));
@@ -828,17 +838,17 @@ public class GitHub_Informer_New {
 				  }
 				  else
 				  {
-					HttpResult directResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, null));
+					HttpResult directResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, null, useCliqBotAuth));
 					status = directResult.status;
 					localResponse = directResult.body;
 					debug("Cliq post status=" + status + ", usingReplyTo=false, responsePreview=" + preview(localResponse));
-					responseContent.append(localResponse);
+					responseContent.append(localResponse);      
 				  }
 
 				  // Fallback: if all threaded attempts fail, retry as normal channel message.
 				  if(!postedInThread && prThreadId != null && !prThreadId.isBlank())
 				  {
-					HttpResult fallbackResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, null));
+					HttpResult fallbackResult = postJson(CliqChannelLink, buildCliqPayload(msg, GitHubInformerURL, null, useCliqBotAuth));
 					status = fallbackResult.status;
 					localResponse = fallbackResult.body;
 					debug("Fallback normal post status=" + status + ", responsePreview=" + preview(localResponse));
@@ -931,7 +941,7 @@ public class GitHub_Informer_New {
 			if(status == 204 || status == 200 || status == 201)
 			  MESSAGE_SEND_FAILURE_ERROR = false;
 			if(INVALID_ENDPOINT_ERROR)
-			  ERROR_MESSAGE = "Invalid Endpoint. Endpoint must be of format : <Zoho Cliq Channel API Endpoint>?zapikey=<Zoho Cliq Webhook Token>";
+			  ERROR_MESSAGE = "Invalid Endpoint. Endpoint must be either <Zoho Cliq Channel API Endpoint>?zapikey=<Zoho Cliq Webhook Token> or https://cliq.zoho.com/api/v2/channelsbyname/<CHANNEL_UNIQUE_NAME>/message?bot_unique_name=<BOT_UNIQUE_NAME> with CLIQ_AUTH_TOKEN.";
 			else if(GITHUB_ERROR)
 			  ERROR_MESSAGE = "Environmental Variable GITHUB_OUTPUT missing";
 			else if(MESSAGE_SEND_FAILURE_ERROR)
@@ -940,7 +950,7 @@ public class GitHub_Informer_New {
 			  ERROR_MESSAGE = "GitHub Informer executed Successfully";
 			writeGithubOutput(status,ERROR_MESSAGE);
 		}  catch (MalformedURLException e) {
-			ERROR_MESSAGE = "Invalid Endpoint URL. Please provide channel-endpoint as <Cliq Channel API Endpoint>?zapikey=<Cliq Webhook Token>";
+			ERROR_MESSAGE = "Invalid Endpoint URL. Please provide channel-endpoint as either <Cliq Channel API Endpoint>?zapikey=<Cliq Webhook Token> or /channelsbyname/<CHANNEL_UNIQUE_NAME>/message?bot_unique_name=<BOT_UNIQUE_NAME>.";
 			e.printStackTrace();
 		} catch (IOException e) {
 			ERROR_MESSAGE = "I/O Error while sending message to Cliq: " + e.getMessage();
@@ -1061,6 +1071,12 @@ public class GitHub_Informer_New {
 		HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
 		connection.setRequestMethod("POST");
 		connection.setRequestProperty("Content-Type", "application/json");
+		if(isCliqBotAuthEndpoint(endpoint))
+		{
+			String cliqAuthToken = defaultIfBlank((String) System.getenv("CLIQ_AUTH_TOKEN"), "").trim();
+			if(!cliqAuthToken.isBlank())
+				connection.setRequestProperty("Authorization", "Bearer " + cliqAuthToken);
+		}
 		connection.setDoOutput(true);
 		try (OutputStream os = connection.getOutputStream())
 		{
@@ -1071,6 +1087,18 @@ public class GitHub_Informer_New {
 		String body = readConnectionBody(connection, status > 299);
 		debug("POST response status=" + status + ", bodyPreview=" + preview(body));
 		return new HttpResult(status, body);
+	}
+
+	public static boolean isCliqWebhookEndpoint(String endpoint)
+	{
+		String value = defaultIfBlank(endpoint, "");
+		return value.contains("message") && value.contains("https://cliq.zoho") && value.contains("/api/v2/") && value.contains("?zapikey=");
+	}
+
+	public static boolean isCliqBotAuthEndpoint(String endpoint)
+	{
+		String value = defaultIfBlank(endpoint, "");
+		return value.contains("https://cliq.zoho") && value.contains("/api/v2/channelsbyname/") && value.contains("/message") && value.contains("bot_unique_name=");
 	}
 
 	public static HttpResult sendHttpRequest(String method, String endpoint, String payload, Map<String, String> headers) throws IOException
@@ -1136,7 +1164,7 @@ public class GitHub_Informer_New {
 		return response.toString();
 	}
 
-	public static String buildCliqPayload(String message, String imageUrl, String threadMessageId)
+	public static String buildCliqPayload(String message, String imageUrl, String threadMessageId, boolean useCliqBotAuth)
 	{
 		StringBuilder payload = new StringBuilder();
 		payload.append("{\n\"card\":{\"theme\":\"modern-inline\"},");
@@ -1148,7 +1176,10 @@ public class GitHub_Informer_New {
 			payload.append("\n\"thread_message_id\":\"").append(jsonEscape(normalizedThreadMessageId)).append("\",");
 			payload.append("\n\"post_in_parent\":false,");
 		}
-		payload.append("\n\"bot\":\n{\n\"name\":\"GitHub Informer for Zoho Cliq\",\n\"image\":\"").append(jsonEscape(imageUrl)).append("\"}}\n");
+		if(!useCliqBotAuth)
+			payload.append("\n\"bot\":\n{\n\"name\":\"GitHub Informer for Zoho Cliq\",\n\"image\":\"").append(jsonEscape(imageUrl)).append("\"}}\n");
+		else
+			payload.append("\n}\n");
 		return payload.toString();
 	}
 
