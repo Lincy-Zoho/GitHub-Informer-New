@@ -260,6 +260,8 @@ runs:
             echo "EOF" >> $GITHUB_ENV
             echo "PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_URL=${{ github.event.pull_request.html_url }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_DIFF_URL=${{ github.event.pull_request.diff_url }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_BASE_SHA=${{ github.event.pull_request.base.sha }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
             echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
@@ -297,6 +299,8 @@ runs:
             echo "EOF" >> $GITHUB_ENV
             echo "PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_URL=${{ github.event.pull_request.html_url }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_DIFF_URL=${{ github.event.pull_request.diff_url }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_BASE_SHA=${{ github.event.pull_request.base.sha }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
             echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
