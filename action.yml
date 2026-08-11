@@ -9,6 +9,8 @@ inputs:
   channel-endpoint:
     description: "Endpoint of the Channel you would like to Integrate with in Cliq"
     required: true
+  channel-auth-token:
+    description: "Optional Cliq OAuth bearer token for bot-auth mode when using /channelsbyname/.../message?bot_unique_name=... URL"
   branch-protection-rule-message:
     description: "The Message to be Delivered to the Cliq Channel during a branch protection rule event"
   check-run-message:
@@ -376,6 +378,7 @@ runs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          CLIQ_AUTH_TOKEN: ${{ inputs.channel-auth-token }}
           AI_REVIEW_ENABLED: ${{ inputs.ai-review-enabled }}
           AI_REVIEW_TRIGGER: ${{ inputs.ai-review-trigger }}
           AI_REVIEW_ON_SYNC: ${{ inputs.ai-review-on-sync }}
