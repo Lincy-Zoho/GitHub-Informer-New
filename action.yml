@@ -3,7 +3,7 @@ description: "The GitHub Action integrates GitHub and Zoho Cliq by notifying abo
 
 branding:
   icon: 'message-square'
-  color: 'blue'
+  color: 'blue' 
 
 inputs:
   channel-endpoint:
