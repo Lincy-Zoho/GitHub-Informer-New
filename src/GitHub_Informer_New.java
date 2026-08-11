@@ -2115,9 +2115,9 @@ public class GitHub_Informer_New {
 	{
 		if(body == null || body.isBlank())
 			return "";
-		Matcher messageMatcher = Pattern.compile("\\\"content\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"", Pattern.DOTALL).matcher(body);
-		if(messageMatcher.find())
-			return jsonUnescape(messageMatcher.group(1));
+		String value = extractJsonStringField(body, "content");
+		if(value != null)
+			return value;
 		return "";
 	}
 
@@ -2125,9 +2125,9 @@ public class GitHub_Informer_New {
 	{
 		if(body == null || body.isBlank())
 			return "";
-		Matcher textMatcher = Pattern.compile("\\\"text\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"", Pattern.DOTALL).matcher(body);
-		if(textMatcher.find())
-			return jsonUnescape(textMatcher.group(1));
+		String value = extractJsonStringField(body, "text");
+		if(value != null)
+			return value;
 		return "";
 	}
 
@@ -2135,10 +2135,62 @@ public class GitHub_Informer_New {
 	{
 		if(body == null || body.isBlank())
 			return "";
-		Matcher textMatcher = Pattern.compile("\\\"text\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\"])*)\\\"", Pattern.DOTALL).matcher(body);
-		if(textMatcher.find())
-			return jsonUnescape(textMatcher.group(1));
+		String value = extractJsonStringField(body, "text");
+		if(value != null)
+			return value;
 		return "";
+	}
+
+	public static String extractJsonStringField(String json, String fieldName)
+	{
+		if(json == null || json.isBlank() || fieldName == null || fieldName.isBlank())
+			return null;
+		String quotedField = "\"" + fieldName + "\"";
+		int searchFrom = 0;
+		while(true)
+		{
+			int keyIndex = json.indexOf(quotedField, searchFrom);
+			if(keyIndex < 0)
+				return null;
+			int colonIndex = json.indexOf(':', keyIndex + quotedField.length());
+			if(colonIndex < 0)
+				return null;
+
+			int valueStart = colonIndex + 1;
+			while(valueStart < json.length() && Character.isWhitespace(json.charAt(valueStart)))
+				valueStart++;
+
+			if(valueStart >= json.length())
+				return null;
+			if(json.charAt(valueStart) != '"')
+			{
+				searchFrom = keyIndex + quotedField.length();
+				continue;
+			}
+
+			StringBuilder escapedValue = new StringBuilder();
+			boolean escaping = false;
+			for(int i = valueStart + 1; i < json.length(); i++)
+			{
+				char c = json.charAt(i);
+				if(escaping)
+				{
+					escapedValue.append('\\').append(c);
+					escaping = false;
+					continue;
+				}
+				if(c == '\\')
+				{
+					escaping = true;
+					continue;
+				}
+				if(c == '"')
+					return jsonUnescape(escapedValue.toString());
+				escapedValue.append(c);
+			}
+
+			return null;
+		}
 	}
 
 	public static String extractLine(String content, String key)
@@ -2156,6 +2208,7 @@ public class GitHub_Informer_New {
 		String source = defaultIfBlank(content, "");
 		if(source.isBlank())
 			return "";
+		source = trimTo(source, 12000);
 
 		source = source.replace("\\r", "").replace("\\\\n", "\\n").replace("**", "").replace("__", "");
 		Matcher detailsMatcher = Pattern.compile("(?is)\\bDETAILS\\b\\s*[:=]\\s*(.+)$").matcher(source);
@@ -2250,6 +2303,7 @@ public class GitHub_Informer_New {
 		String source = defaultIfBlank(content, "");
 		if(source.isBlank())
 			source = defaultIfBlank(rawBody, "");
+		source = trimTo(source, 12000);
 		source = source.replace("**", "").replace("__", "");
 
 		String patterns = "(PASS|FAIL|FAILED|APPROVED|REJECTED)";
