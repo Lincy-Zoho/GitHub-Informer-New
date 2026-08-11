@@ -839,7 +839,7 @@ public class GitHub_Informer_New {
 					responseContent.append(localResponse);
 				  }
 
-				  if(isPrEvent && "opened".equals(ActionRaw) && (createdThreadId == null || createdThreadId.isBlank()))
+				  if(isPrEvent && (prThreadId == null || prThreadId.isBlank()) && (createdThreadId == null || createdThreadId.isBlank()))
 				  {
 					String extractedId = extractCliqMessageId(localResponse);
 					if(extractedId != null && !extractedId.isBlank())
@@ -857,7 +857,7 @@ public class GitHub_Informer_New {
 				    ERROR_MESSAGE = responseContent.toString();
 				}
 
-				if(isPrEvent && "opened".equals(ActionRaw) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
+				if(isPrEvent && (prThreadId == null || prThreadId.isBlank()) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && githubToken != null && !githubToken.isBlank())
 				{
 				  boolean threadSaved = upsertCliqThreadId(
 					  Repository,
@@ -876,7 +876,7 @@ public class GitHub_Informer_New {
 					System.err.println("PR thread marker not saved in any storage backend. Check workflow permissions issues:write/pull-requests:write/projects:write and token scope.");
 				  }
 				}
-				else if(isPrEvent && "opened".equals(ActionRaw) && (createdThreadId == null || createdThreadId.isBlank()))
+				else if(isPrEvent && (prThreadId == null || prThreadId.isBlank()) && (createdThreadId == null || createdThreadId.isBlank()))
 				{
 				  System.err.println("PR thread marker not saved: Cliq response did not return a message/thread id.");
 				}
