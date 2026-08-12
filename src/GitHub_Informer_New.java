@@ -1948,7 +1948,7 @@ public class GitHub_Informer_New {
 
 		String diff = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
 		if(diff == null || diff.isBlank())
-			return new AiReviewDecision(true, "neutral", "AI Review Gate skipped", "Unable to fetch PR diff from GitHub after retries. Skipping AI decision for this run.");
+			return new AiReviewDecision(false, "failure", "AI Review Gate failed", "Unable to fetch PR diff from GitHub after retries. Failing AI review in strict mode.");
 
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff);
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
