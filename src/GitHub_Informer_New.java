@@ -1959,7 +1959,7 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic.";
+		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. These validation/error-handling/test requirements apply only to files that contain executable logic (for example JavaScript, TypeScript, Java, Python, form submission handlers, or API calls). Do not require validation, error handling, or test coverage for static content changes such as plain HTML markup, CSS-only changes, Markdown, documentation, or JSON/YAML configuration files that do not introduce new logic; review those only for correctness, broken links or references, and security concerns actually present in the diff. If a file has no applicable issues, do not fabricate a finding for it, and do not penalize the PR for lacking tests or validation that would not make sense for the type of file changed. When every changed file is free of genuine issues, respond with RESULT: PASS and a DETAILS list stating there were no issues found.";
 
 		try
 		{
@@ -2175,22 +2175,54 @@ public class GitHub_Informer_New {
 			HashMap<String, String> headers = new HashMap<String, String>();
 			headers.put("Accept", "application/vnd.github+json");
 			headers.put("Authorization", "Bearer " + githubToken);
-			String endpoint = "https://api.github.com/repos/" + repository + "/pulls/" + prNumber + "/files?per_page=100";
-			HttpResult response = sendHttpRequest("GET", endpoint, null, headers);
-			debug("AI diff fetch via pulls files API status=" + response.status);
-			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
-				return "";
 
-			String synthesizedDiff = synthesizeUnifiedDiffFromFilesResponse(response.body);
-			if(synthesizedDiff == null || synthesizedDiff.isBlank())
+			StringBuilder combined = new StringBuilder();
+			int totalFiles = 0;
+			int page = 1;
+			int maxPages = 10; // hard safety cap = 1000 files
+			while(page <= maxPages)
+			{
+				String endpoint = "https://api.github.com/repos/" + repository + "/pulls/" + prNumber + "/files?per_page=100&page=" + page;
+				HttpResult response = sendHttpRequest("GET", endpoint, null, headers);
+				debug("AI diff fetch via pulls files API page=" + page + " status=" + response.status);
+				if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
+					break;
+
+				int countOnPage = countFilenameEntries(response.body);
+				if(countOnPage == 0)
+					break;
+
+				String synthesizedDiff = synthesizeUnifiedDiffFromFilesResponse(response.body);
+				if(synthesizedDiff != null && !synthesizedDiff.isBlank())
+					combined.append(synthesizedDiff);
+
+				totalFiles += countOnPage;
+				if(countOnPage < 100)
+					break; // last page reached
+				page++;
+			}
+
+			if(totalFiles == 0)
 				return "";
-			return synthesizedDiff;
+			debug("AI diff fetch via pulls files API totalFiles=" + totalFiles + " pages=" + page);
+			return combined.toString();
 		}
 		catch(Exception e)
 		{
 			System.err.println("Unable to fetch PR files for diff synthesis: " + e.getMessage());
 		}
 		return "";
+	}
+
+	public static int countFilenameEntries(String body)
+	{
+		if(body == null || body.isBlank())
+			return 0;
+		Matcher matcher = Pattern.compile("\\\"filename\\\"\\s*:\\s*\\\"").matcher(body);
+		int count = 0;
+		while(matcher.find())
+			count++;
+		return count;
 	}
 
 	public static String synthesizeUnifiedDiffFromFilesResponse(String body)
@@ -2218,7 +2250,7 @@ public class GitHub_Informer_New {
 			if(patch != null && !patch.isBlank())
 				sb.append(patch).append("\n");
 			else
-				sb.append("@@\n").append("[No textual patch available from GitHub files API]\n");
+				sb.append("@@\n").append("[UNREVIEWABLE: No textual patch available from GitHub for this file (binary file or diff too large). Do not report issues for this file; instead list it once under DETAILS as FILE: ").append(fileName).append(", LINE: n/a, ISSUE: file could not be reviewed (no patch content available), FIX: review manually.]\n");
 		}
 		if(count == 0)
 			return "";
@@ -2233,8 +2265,65 @@ public class GitHub_Informer_New {
 		prompt.append("PR Title: ").append(defaultIfBlank(pullRequestTitle, "")).append("\\n");
 		prompt.append("PR URL: ").append(defaultIfBlank(pullRequestUrl, "")).append("\\n\\n");
 		prompt.append("PR Description:\\n").append(defaultIfBlank(pullRequestBody, "")).append("\\n\\n");
-		prompt.append("Diff:\\n").append(trimTo(defaultIfBlank(diff, ""), 18000));
+
+		int maxDiffChars = 120000;
+		DiffTruncationResult truncationResult = truncateDiffByFileBoundary(defaultIfBlank(diff, ""), maxDiffChars);
+		prompt.append("Diff:\\n").append(truncationResult.diffText);
+		if(!truncationResult.omittedFiles.isEmpty())
+		{
+			prompt.append("\\n\\n[NOTE: The following ").append(truncationResult.omittedFiles.size())
+				.append(" file(s) could not be included in this review due to overall diff size limits and were NOT reviewed. Do not report issues for them, do not assume they are correct, and list each once under DETAILS as FILE: <name>, LINE: n/a, ISSUE: file omitted from AI review due to PR size limits, FIX: review manually. Omitted files: ")
+				.append(String.join(", ", truncationResult.omittedFiles)).append("]");
+		}
 		return prompt.toString();
+	}
+
+	public static class DiffTruncationResult
+	{
+		public String diffText;
+		public ArrayList<String> omittedFiles;
+		public DiffTruncationResult(String diffText, ArrayList<String> omittedFiles)
+		{
+			this.diffText = diffText;
+			this.omittedFiles = omittedFiles;
+		}
+	}
+
+	public static DiffTruncationResult truncateDiffByFileBoundary(String diff, int maxChars)
+	{
+		ArrayList<String> omitted = new ArrayList<String>();
+		if(diff == null || diff.isBlank())
+			return new DiffTruncationResult("", omitted);
+		if(diff.length() <= maxChars)
+			return new DiffTruncationResult(diff, omitted);
+
+		String[] fileBlocks = diff.split("(?=^diff --git )", 0);
+		StringBuilder kept = new StringBuilder();
+		int runningLength = 0;
+		boolean limitReached = false;
+		Pattern filenamePattern = Pattern.compile("^diff --git a/(.*?) b/");
+		for(String block : fileBlocks)
+		{
+			if(block == null || block.isBlank())
+				continue;
+			if(!limitReached && runningLength + block.length() <= maxChars)
+			{
+				kept.append(block);
+				runningLength += block.length();
+			}
+			else
+			{
+				limitReached = true;
+				Matcher m = filenamePattern.matcher(block.trim());
+				if(m.find())
+					omitted.add(m.group(1));
+				else
+					omitted.add("(unnamed file)");
+			}
+		}
+		if(kept.length() == 0)
+			kept.append(trimTo(diff, maxChars));
+		return new DiffTruncationResult(kept.toString(), omitted);
 	}
 
 	public static String extractAiContent(String body, String provider)
