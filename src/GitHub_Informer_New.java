@@ -2145,7 +2145,20 @@ public class GitHub_Informer_New {
 
 	public static String fetchPullRequestDiffWithRetries(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
 	{
-		int maxAttempts = 6;
+		// Pushing a new commit straight to a branch that already has an open PR fires the
+		// "synchronize" webhook almost instantly, but GitHub's backend needs a short window
+		// to finish indexing the new head commit before ANY diff endpoint (compare API,
+		// files API, or the pulls-diff API) will recognize it - during that window all three
+		// can return 404/empty even though the push itself succeeded. Verifying the head SHA
+		// is resolvable before hammering the diff endpoints, plus a longer/slower backoff,
+		// closes that race instead of giving up and failing the whole AI review in strict mode.
+		int maxAttempts = 10;
+		long baseDelayMs = 3000L;
+		long maxDelayMs = 15000L;
+
+		if(pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+			waitForCommitAvailability(repository, pullRequestHeadSha, githubToken, maxAttempts, baseDelayMs, maxDelayMs);
+
 		for(int attempt = 1; attempt <= maxAttempts; attempt++)
 		{
 			String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
@@ -2153,10 +2166,11 @@ public class GitHub_Informer_New {
 				return diff;
 			if(attempt < maxAttempts)
 			{
-				debug("AI diff fetch attempt " + attempt + " failed. Retrying...");
+				long delay = Math.min(baseDelayMs * attempt, maxDelayMs);
+				debug("AI diff fetch attempt " + attempt + "/" + maxAttempts + " failed. Retrying in " + delay + "ms...");
 				try
 				{
-					Thread.sleep(Math.min(2000L * attempt, 10000L));
+					Thread.sleep(delay);
 				}
 				catch(InterruptedException ie)
 				{
@@ -2166,6 +2180,43 @@ public class GitHub_Informer_New {
 			}
 		}
 		return "";
+	}
+
+	// Polls GET /repos/{repo}/commits/{sha} until GitHub's API acknowledges the head commit
+	// exists (200), or the same retry budget is exhausted. This avoids wasting the diff-fetch
+	// retry loop on repeated 404s while GitHub is still indexing a just-pushed commit.
+	public static void waitForCommitAvailability(String repository, String headSha, String githubToken, int maxAttempts, long baseDelayMs, long maxDelayMs)
+	{
+		try
+		{
+			HashMap<String, String> headers = new HashMap<String, String>();
+			headers.put("Accept", "application/vnd.github+json");
+			headers.put("Authorization", "Bearer " + githubToken);
+			String endpoint = "https://api.github.com/repos/" + repository + "/commits/" + headSha;
+
+			for(int attempt = 1; attempt <= maxAttempts; attempt++)
+			{
+				HttpResult response = sendHttpRequest("GET", endpoint, null, headers);
+				debug("Commit availability check attempt " + attempt + "/" + maxAttempts + " status=" + response.status + " sha=" + headSha);
+				if(response.status >= 200 && response.status <= 299)
+					return;
+				long delay = Math.min(baseDelayMs * attempt, maxDelayMs);
+				try
+				{
+					Thread.sleep(delay);
+				}
+				catch(InterruptedException ie)
+				{
+					Thread.currentThread().interrupt();
+					return;
+				}
+			}
+			debug("Commit " + headSha + " was not confirmed available via GitHub API before diff fetch retries began. Proceeding anyway.");
+		}
+		catch(Exception e)
+		{
+			debug("Commit availability check failed with exception, proceeding to diff fetch retries anyway: " + e.getMessage());
+		}
 	}
 
 	public static String fetchPullRequestDiffFromFilesApi(String repository, String prNumber, String githubToken)
