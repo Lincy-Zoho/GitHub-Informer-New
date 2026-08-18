@@ -1951,9 +1951,14 @@ public class GitHub_Informer_New {
 		if(githubToken == null || githubToken.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "GITHUB_TOKEN is missing.");
 
-		String diff = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
-		if(diff == null || diff.isBlank())
+		DiffFetchResult diffResult = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
+		if(diffResult.diff == null || diffResult.diff.isBlank())
+		{
+			if(diffResult.confirmedNoChangedFiles)
+				return new AiReviewDecision(true, "success", "AI review skipped: no file changes detected", "GitHub confirmed zero changed files between base " + trimTo(defaultIfBlank(pullRequestBaseSha, "?"), 12) + " and head " + trimTo(defaultIfBlank(pullRequestHeadSha, "?"), 12) + ". Nothing to review.");
 			return new AiReviewDecision(false, "failure", "AI Review Gate failed", "Unable to fetch PR diff from GitHub after retries. Failing AI review in strict mode.");
+		}
+		String diff = diffResult.diff;
 
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff);
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
@@ -2089,6 +2094,11 @@ public class GitHub_Informer_New {
 		return raw.replace(" ", "%20");
 	}
 
+	// Sentinel returned when the PR's /files endpoint responds 200 with a definitively empty
+	// file list. That is a real, authoritative answer from GitHub (not a transient failure),
+	// so callers must treat it differently from "" (which means "endpoint didn't work / try again").
+	public static final String NO_CHANGED_FILES_SENTINEL = "\u0000NO_CHANGED_FILES\u0000";
+
 	public static String fetchPullRequestDiff(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
 	{
 		try
@@ -2112,8 +2122,14 @@ public class GitHub_Informer_New {
 
 			// Files API is also SHA-independent-but-live; it reflects the PR's current head,
 			// recomputed per request, and rarely suffers the same diff-cache lag as the
-			// pulls/{n} diff-accept endpoint below.
+			// pulls/{n} diff-accept endpoint below. It is also the ONLY one of the four
+			// strategies that can distinguish "endpoint not ready yet" (non-2xx/empty body)
+			// from "GitHub confirms zero changed files" (2xx with an empty [] array) - the
+			// other three strategies return an empty diff body in both cases and cannot tell
+			// them apart, which is why the zero-files signal is detected here specifically.
 			String filesApiDiff = fetchPullRequestDiffFromFilesApi(repository, prNumber, githubToken);
+			if(filesApiDiff == NO_CHANGED_FILES_SENTINEL)
+				return NO_CHANGED_FILES_SENTINEL;
 			if(filesApiDiff != null && !filesApiDiff.isBlank())
 				return filesApiDiff;
 
@@ -2143,7 +2159,19 @@ public class GitHub_Informer_New {
 		return "";
 	}
 
-	public static String fetchPullRequestDiffWithRetries(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
+	public static class DiffFetchResult
+	{
+		public String diff;
+		public boolean confirmedNoChangedFiles;
+
+		public DiffFetchResult(String diff, boolean confirmedNoChangedFiles)
+		{
+			this.diff = diff == null ? "" : diff;
+			this.confirmedNoChangedFiles = confirmedNoChangedFiles;
+		}
+	}
+
+	public static DiffFetchResult fetchPullRequestDiffWithRetries(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
 	{
 		// Pushing a new commit straight to a branch that already has an open PR fires the
 		// "synchronize" webhook almost instantly, but GitHub's backend needs a short window
@@ -2162,8 +2190,19 @@ public class GitHub_Informer_New {
 		for(int attempt = 1; attempt <= maxAttempts; attempt++)
 		{
 			String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
+
+			// GitHub gave a definitive, authoritative "zero changed files" answer (HTTP 200,
+			// valid empty [] array). This is stable and will not change on retry, unlike a
+			// transient 404/empty-body while a commit is still being indexed - so stop
+			// immediately instead of burning the remaining attempts and retry delays.
+			if(diff == NO_CHANGED_FILES_SENTINEL)
+			{
+				debug("AI diff fetch attempt " + attempt + "/" + maxAttempts + ": GitHub confirmed zero changed files for base=" + pullRequestBaseSha + " head=" + pullRequestHeadSha + ". Not retrying further.");
+				return new DiffFetchResult("", true);
+			}
+
 			if(diff != null && !diff.isBlank())
-				return diff;
+				return new DiffFetchResult(diff, false);
 			if(attempt < maxAttempts)
 			{
 				long delay = Math.min(baseDelayMs * attempt, maxDelayMs);
@@ -2179,7 +2218,7 @@ public class GitHub_Informer_New {
 				}
 			}
 		}
-		return "";
+		return new DiffFetchResult("", false);
 	}
 
 	// Polls GET /repos/{repo}/commits/{sha} until GitHub's API acknowledges the head commit
@@ -2241,7 +2280,15 @@ public class GitHub_Informer_New {
 
 				int countOnPage = countFilenameEntries(response.body);
 				if(countOnPage == 0)
+				{
+					// A 2xx response with a valid, parseable empty array on page 1 is GitHub's
+					// authoritative answer, not a sign the endpoint is still warming up. Only
+					// trust this signal on page 1: a trailing empty page after earlier pages
+					// already returned files just means pagination ended normally.
+					if(page == 1 && isEmptyJsonArrayBody(response.body))
+						return NO_CHANGED_FILES_SENTINEL;
 					break;
+				}
 
 				String synthesizedDiff = synthesizeUnifiedDiffFromFilesResponse(response.body);
 				if(synthesizedDiff != null && !synthesizedDiff.isBlank())
@@ -2263,6 +2310,16 @@ public class GitHub_Informer_New {
 			System.err.println("Unable to fetch PR files for diff synthesis: " + e.getMessage());
 		}
 		return "";
+	}
+
+	// True only for a well-formed, empty JSON array response body (e.g. "[]", possibly with
+	// surrounding whitespace). Used to make sure the zero-files fast-path is never taken for a
+	// malformed/truncated/non-JSON body that merely happens to contain no "filename" keys.
+	public static boolean isEmptyJsonArrayBody(String body)
+	{
+		if(body == null)
+			return false;
+		return body.trim().equals("[]");
 	}
 
 	public static int countFilenameEntries(String body)
