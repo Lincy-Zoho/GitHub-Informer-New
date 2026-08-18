@@ -2093,6 +2093,38 @@ public class GitHub_Informer_New {
 	{
 		try
 		{
+			// SHA-pinned compare API is tried FIRST. It is explicitly scoped to the exact
+			// base/head commit SHAs captured at event time, so it cannot return a stale,
+			// previously-cached diff the way the PR-number-scoped endpoints below can
+			// immediately after a fresh "synchronize" push (GitHub lazily recomputes the
+			// PR-level diff/mergeability and can briefly serve the previous head's diff).
+			if(pullRequestBaseSha != null && !pullRequestBaseSha.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+			{
+				HashMap<String, String> compareHeaders = new HashMap<String, String>();
+				compareHeaders.put("Accept", "application/vnd.github.v3.diff");
+				compareHeaders.put("Authorization", "Bearer " + githubToken);
+				String compareUrl = "https://api.github.com/repos/" + repository + "/compare/" + pullRequestBaseSha + "..." + pullRequestHeadSha;
+				HttpResult compareResponse = sendHttpRequest("GET", compareUrl, null, compareHeaders);
+				debug("AI diff fetch via compare API status=" + compareResponse.status + " base=" + pullRequestBaseSha + " head=" + pullRequestHeadSha);
+				if(compareResponse.status >= 200 && compareResponse.status <= 299 && compareResponse.body != null && !compareResponse.body.isBlank())
+					return compareResponse.body;
+			}
+
+			// Files API is also SHA-independent-but-live; it reflects the PR's current head,
+			// recomputed per request, and rarely suffers the same diff-cache lag as the
+			// pulls/{n} diff-accept endpoint below.
+			String filesApiDiff = fetchPullRequestDiffFromFilesApi(repository, prNumber, githubToken);
+			if(filesApiDiff != null && !filesApiDiff.isBlank())
+				return filesApiDiff;
+
+			HashMap<String, String> headers = new HashMap<String, String>();
+			headers.put("Accept", "application/vnd.github.v3.diff");
+			headers.put("Authorization", "Bearer " + githubToken);
+			HttpResult response = sendHttpRequest("GET", "https://api.github.com/repos/" + repository + "/pulls/" + prNumber, null, headers);
+			debug("AI diff fetch via pulls API (diff accept) status=" + response.status);
+			if(response.status >= 200 && response.status <= 299 && response.body != null && !response.body.isBlank())
+				return response.body;
+
 			if(pullRequestDiffUrl != null && !pullRequestDiffUrl.isBlank())
 			{
 				HashMap<String, String> diffHeaders = new HashMap<String, String>();
@@ -2103,30 +2135,6 @@ public class GitHub_Informer_New {
 				if(diffUrlResponse.status >= 200 && diffUrlResponse.status <= 299 && diffUrlResponse.body != null && !diffUrlResponse.body.isBlank())
 					return diffUrlResponse.body;
 			}
-
-			if(pullRequestBaseSha != null && !pullRequestBaseSha.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
-			{
-				HashMap<String, String> compareHeaders = new HashMap<String, String>();
-				compareHeaders.put("Accept", "application/vnd.github.v3.diff");
-				compareHeaders.put("Authorization", "Bearer " + githubToken);
-				String compareUrl = "https://api.github.com/repos/" + repository + "/compare/" + pullRequestBaseSha + "..." + pullRequestHeadSha;
-				HttpResult compareResponse = sendHttpRequest("GET", compareUrl, null, compareHeaders);
-				debug("AI diff fetch via compare API status=" + compareResponse.status);
-				if(compareResponse.status >= 200 && compareResponse.status <= 299 && compareResponse.body != null && !compareResponse.body.isBlank())
-					return compareResponse.body;
-			}
-
-			HashMap<String, String> headers = new HashMap<String, String>();
-			headers.put("Accept", "application/vnd.github.v3.diff");
-			headers.put("Authorization", "Bearer " + githubToken);
-			HttpResult response = sendHttpRequest("GET", "https://api.github.com/repos/" + repository + "/pulls/" + prNumber, null, headers);
-			debug("AI diff fetch via pulls API (diff accept) status=" + response.status);
-			if(response.status >= 200 && response.status <= 299)
-				return response.body;
-
-			String filesApiDiff = fetchPullRequestDiffFromFilesApi(repository, prNumber, githubToken);
-			if(filesApiDiff != null && !filesApiDiff.isBlank())
-				return filesApiDiff;
 		}
 		catch(Exception e)
 		{
@@ -2137,7 +2145,7 @@ public class GitHub_Informer_New {
 
 	public static String fetchPullRequestDiffWithRetries(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
 	{
-		int maxAttempts = 4;
+		int maxAttempts = 6;
 		for(int attempt = 1; attempt <= maxAttempts; attempt++)
 		{
 			String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
@@ -2148,7 +2156,7 @@ public class GitHub_Informer_New {
 				debug("AI diff fetch attempt " + attempt + " failed. Retrying...");
 				try
 				{
-					Thread.sleep(1500L * attempt);
+					Thread.sleep(Math.min(2000L * attempt, 10000L));
 				}
 				catch(InterruptedException ie)
 				{
