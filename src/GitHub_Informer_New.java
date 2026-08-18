@@ -2019,7 +2019,9 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. These validation/error-handling/test requirements apply only to files that contain executable logic (for example JavaScript, TypeScript, Java, Python, form submission handlers, or API calls). Do not require validation, error handling, or test coverage for static content changes such as plain HTML markup, CSS-only changes, Markdown, documentation, or JSON/YAML configuration files that do not introduce new logic; review those only for correctness, broken links or references, and security concerns actually present in the diff. If a file has no applicable issues, do not fabricate a finding for it, and do not penalize the PR for lacking tests or validation that would not make sense for the type of file changed. When every changed file is free of genuine issues, respond with RESULT: PASS and a DETAILS list stating there were no issues found. When the provided diff is explicitly marked as an incremental review (only the most recently pushed commits, not the full pull request), judge ONLY the changes present in that diff: do not fail the review for missing tests, validation, or fixes that would only make sense to evaluate against the full cumulative PR, and do not re-raise issues that are not present in the given incremental diff.";
+		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. "
+			+ "DIFF FORMAT RULES (critical, read carefully): The diff uses standard unified diff format. Lines starting with '-' were REMOVED and are NO LONGER PRESENT in the code after this change; lines starting with '+' were ADDED and represent the CURRENT/NEW state of the code; lines starting with a space are unchanged context shown for reference only. You MUST evaluate the code quality, security, and correctness of ONLY the resulting/final state of the code, i.e. the '+' lines and unchanged context lines. NEVER report an issue, vulnerability, or violation whose offending code appears ONLY on a '-' (removed) line \u2014 if a problem such as an XSS sink, hardcoded secret, or bad pattern was deleted (shown as '-') and is not also present as a '+' or unchanged line elsewhere, that means it was FIXED, and you must treat it as resolved, not as an outstanding issue. Before citing any FILE/LINE/ISSUE, double-check that the exact offending code you are citing is present in a '+' or unchanged context line in the CURRENT diff, not merely mentioned in a '-' line. "
+			+ "Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. These validation/error-handling/test requirements apply only to files that contain executable logic (for example JavaScript, TypeScript, Java, Python, form submission handlers, or API calls). Do not require validation, error handling, or test coverage for static content changes such as plain HTML markup, CSS-only changes, Markdown, documentation, or JSON/YAML configuration files that do not introduce new logic; review those only for correctness, broken links or references, and security concerns actually present in the diff. If a file has no applicable issues, do not fabricate a finding for it, and do not penalize the PR for lacking tests or validation that would not make sense for the type of file changed. When every changed file is free of genuine issues, respond with RESULT: PASS and a DETAILS list stating there were no issues found. When the provided diff is explicitly marked as an incremental review (only the most recently pushed commits, not the full pull request), judge ONLY the changes present in that diff: do not fail the review for missing tests, validation, or fixes that would only make sense to evaluate against the full cumulative PR, and do not re-raise issues that are not present in the given incremental diff.";
 
 		try
 		{
@@ -2172,7 +2174,25 @@ public class GitHub_Informer_New {
 				HttpResult compareResponse = sendHttpRequest("GET", compareUrl, null, compareHeaders);
 				debug("AI diff fetch via compare API status=" + compareResponse.status + " base=" + pullRequestBaseSha + " head=" + pullRequestHeadSha + " incremental=" + isIncremental);
 				if(compareResponse.status >= 200 && compareResponse.status <= 299 && compareResponse.body != null && !compareResponse.body.isBlank())
-					return compareResponse.body;
+				{
+					// GitHub's compare API is known to occasionally serve a stale/cached diff body
+					// for a SHA range requested in quick succession after a fresh push (edge-cache
+					// eventual consistency), which is indistinguishable from a genuine 200 response
+					// and was silently trusted here before. Cross-check the file paths present in
+					// this diff against the PR's live current-head files list (which is recomputed
+					// per request and does not suffer the same caching lag). If the compare-API diff
+					// references files that are not present in the live head's changed-files set for
+					// a non-incremental (full base...head) fetch, treat it as stale and fall through
+					// to the PR-scoped endpoints below instead of handing stale content to the AI.
+					if(!isIncremental && isCompareDiffStale(repository, prNumber, githubToken, compareResponse.body))
+					{
+						debug("AI diff fetch: compare API diff for head=" + pullRequestHeadSha + " looks stale relative to the live PR files list. Discarding and falling back to PR-scoped diff endpoints.");
+					}
+					else
+					{
+						return compareResponse.body;
+					}
+				}
 				if(compareResponse.status >= 200 && compareResponse.status <= 299 && isEmptyJsonArrayBody(compareResponse.body))
 					return NO_CHANGED_FILES_SENTINEL;
 
@@ -2353,6 +2373,65 @@ public class GitHub_Informer_New {
 		catch(Exception e)
 		{
 			debug("Commit availability check failed with exception, proceeding to diff fetch retries anyway: " + e.getMessage());
+		}
+	}
+
+	// Extracts the set of file paths touched by a unified diff (lines starting with "diff --git
+	// a/<path> b/<path>"), used to sanity-check a compare-API diff against the PR's live files list.
+	public static java.util.Set<String> extractDiffFilePaths(String diff)
+	{
+		java.util.Set<String> paths = new java.util.HashSet<String>();
+		if(diff == null || diff.isBlank())
+			return paths;
+		Matcher matcher = Pattern.compile("(?m)^diff --git a/(.+?) b/(.+?)$").matcher(diff);
+		while(matcher.find())
+			paths.add(matcher.group(2));
+		return paths;
+	}
+
+	// Returns true when the file paths present in a compare-API diff body do not overlap at all
+	// with the PR's live current-head changed-files list, which is the practical signature of a
+	// stale/cached compare-API response (GitHub's compare endpoint can briefly serve a diff body
+	// computed against a previous head after a rapid successive push). A live files-API call is
+	// used as the source of truth since it is recomputed per request rather than cached per SHA
+	// range. Fails "open" (returns false / not-stale) on any error, empty diff, or empty live
+	// files list, since strict mode should only discard a diff when we have positive evidence it
+	// disagrees with the live PR state, never on inconclusive data.
+	public static boolean isCompareDiffStale(String repository, String prNumber, String githubToken, String compareDiffBody)
+	{
+		try
+		{
+			java.util.Set<String> diffPaths = extractDiffFilePaths(compareDiffBody);
+			if(diffPaths.isEmpty())
+				return false;
+
+			HashMap<String, String> headers = new HashMap<String, String>();
+			headers.put("Accept", "application/vnd.github+json");
+			headers.put("Authorization", "Bearer " + githubToken);
+			String endpoint = "https://api.github.com/repos/" + repository + "/pulls/" + prNumber + "/files?per_page=100";
+			HttpResult response = sendHttpRequest("GET", endpoint, null, headers);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
+				return false;
+
+			Matcher filenameMatcher = Pattern.compile("\\\"filename\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\"").matcher(response.body);
+			java.util.Set<String> liveFilePaths = new java.util.HashSet<String>();
+			while(filenameMatcher.find())
+				liveFilePaths.add(jsonUnescape(filenameMatcher.group(1)));
+			if(liveFilePaths.isEmpty())
+				return false;
+
+			for(String path : diffPaths)
+			{
+				if(liveFilePaths.contains(path))
+					return false; // at least one file overlaps - not stale
+			}
+			// None of the compare-API diff's file paths appear in the live PR files list at all.
+			return true;
+		}
+		catch(Exception e)
+		{
+			debug("Compare-diff staleness check failed, assuming not stale: " + e.getMessage());
+			return false;
 		}
 	}
 
