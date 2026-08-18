@@ -70,8 +70,14 @@ inputs:
   ai-review-on-sync:
     description: "Run AI review again when new commits are pushed to the PR"
     default: true
+  ai-review-incremental-on-sync:
+    description: "On synchronize events, review only the newly pushed commits (before...head) instead of the full PR diff (base...head). Falls back to the full PR diff when there is no usable previous head (e.g. force-push, first sync)."
+    default: true
   ai-review-label:
     description: "Label name used when ai-review-trigger is label"
+  ai-review-full-on-ready-label:
+    description: "Label name that, when applied to a PR, forces one final full base...head AI review (ignoring incremental mode) as a pre-merge safety net. Set blank to disable this gate."
+    default: "ready-to-merge"
   ai-review-token:
     description: "AI provider token for generating review"
   ai-review-api-url:
@@ -266,6 +272,7 @@ runs:
             echo "PULL_REQUEST_DIFF_URL=${{ github.event.pull_request.diff_url }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_BASE_SHA=${{ github.event.pull_request.base.sha }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_BEFORE_SHA=${{ github.event.before }}" >> $GITHUB_ENV
             echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
             then
@@ -305,6 +312,7 @@ runs:
             echo "PULL_REQUEST_DIFF_URL=${{ github.event.pull_request.diff_url }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_BASE_SHA=${{ github.event.pull_request.base.sha }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
+            echo "PULL_REQUEST_BEFORE_SHA=${{ github.event.before }}" >> $GITHUB_ENV
             echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
             then
@@ -382,7 +390,9 @@ runs:
           AI_REVIEW_ENABLED: ${{ inputs.ai-review-enabled }}
           AI_REVIEW_TRIGGER: ${{ inputs.ai-review-trigger }}
           AI_REVIEW_ON_SYNC: ${{ inputs.ai-review-on-sync }}
+          AI_REVIEW_INCREMENTAL_ON_SYNC: ${{ inputs.ai-review-incremental-on-sync }}
           AI_REVIEW_LABEL: ${{ inputs.ai-review-label }}
+          AI_REVIEW_FULL_LABEL: ${{ inputs.ai-review-full-on-ready-label }}
           AI_REVIEW_TOKEN: ${{ inputs.ai-review-token }}
           AI_REVIEW_API_URL: ${{ inputs.ai-review-api-url }}
           AI_REVIEW_MODEL: ${{ inputs.ai-review-model }}
