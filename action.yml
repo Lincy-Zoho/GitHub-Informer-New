@@ -83,6 +83,9 @@ inputs:
   ai-review-check-name:
     description: "GitHub required check name for AI review gate"
     default: "AI Review Gate"
+  ai-review-cliq-summary-length:
+    description: "Max character length of the AI review summary shown in the Cliq failure notification"
+    default: "300"
   push-message:
     description: "The Message to be Delivered to the Cliq Channel during a push event"
   registry-package-message:
@@ -384,6 +387,9 @@ runs:
           AI_REVIEW_API_URL: ${{ inputs.ai-review-api-url }}
           AI_REVIEW_MODEL: ${{ inputs.ai-review-model }}
           AI_REVIEW_CHECK_NAME: ${{ inputs.ai-review-check-name }}
+          AI_REVIEW_CLIQ_SUMMARY_LENGTH: ${{ inputs.ai-review-cliq-summary-length }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
         run: |
           JAVA=$JAVA_HOME_19_X64/bin/java
           CONNECTOR=$GITHUB_ACTION_PATH/src/GitHub_Informer_New.java
