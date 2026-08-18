@@ -1882,16 +1882,21 @@ public class GitHub_Informer_New {
 		if(!decision.passed)
 		{
 			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
+			boolean prCommentPosted = false;
 			if(githubToken != null && !githubToken.isBlank())
 			{
 				postPullRequestComment(repository, prNumber, githubToken, failureMessage);
+				prCommentPosted = true;
 			}
 			else
 			{
 				System.err.println("AI review failure PR comment skipped: missing github token.");
 			}
 
-			postAiFailureToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, failureMessage);
+			int cliqSummaryLength = parseIntOrDefault(System.getenv("AI_REVIEW_CLIQ_SUMMARY_LENGTH"), 300);
+			String actionsRunUrl = buildActionsRunUrl(repository);
+			String cliqNotification = buildAiFailureCliqNotification(prNumber, pullRequestUrl, decision.summary, prCommentPosted, cliqSummaryLength, actionsRunUrl);
+			postAiFailureToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, cliqNotification);
 		}
 	}
 
@@ -2490,6 +2495,51 @@ public class GitHub_Informer_New {
 		return msg.toString();
 	}
 
+	// Cliq's message card supports a limited number of characters, and large PRs (multiple files/hunks)
+	// can produce AI review details that are too long or unreadable as a single chat card.
+	// So Cliq only gets a short redirect message; the full details are always posted in full on the
+	// GitHub PR comment. Mirrors the compact GitLab Informer Cliq card format (no inline detail dump).
+	public static String buildAiFailureCliqNotification(String prNumber, String pullRequestUrl, String summary, boolean detailsPostedAsPrComment, int summaryMaxLength, String actionsRunUrl)
+	{
+		StringBuilder msg = new StringBuilder();
+		msg.append(":x: **AI Review Failed**\n");
+		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
+			msg.append("[PR #").append(defaultIfBlank(prNumber, "")).append("](").append(pullRequestUrl).append(")");
+		else
+			msg.append("PR #").append(defaultIfBlank(prNumber, ""));
+		msg.append("\n\n");
+		if(detailsPostedAsPrComment && pullRequestUrl != null && !pullRequestUrl.isBlank())
+			msg.append("See full details in the [PR comment](").append(pullRequestUrl).append(").");
+		else if(pullRequestUrl != null && !pullRequestUrl.isBlank())
+			msg.append("Open the [pull request](").append(pullRequestUrl).append(") on GitHub to view details.");
+		else
+			msg.append("Open the pull request on GitHub to view details.");
+		return msg.toString();
+	}
+
+	public static int parseIntOrDefault(String value, int fallback)
+	{
+		try
+		{
+			if(value == null || value.isBlank())
+				return fallback;
+			return Integer.parseInt(value.trim());
+		}
+		catch(Exception e)
+		{
+			return fallback;
+		}
+	}
+
+	public static String buildActionsRunUrl(String repository)
+	{
+		String serverUrl = defaultIfBlank(System.getenv("GITHUB_SERVER_URL"), "https://github.com");
+		String runId = defaultIfBlank(System.getenv("GITHUB_RUN_ID"), "");
+		if(repository == null || repository.isBlank() || runId.isBlank())
+			return "";
+		return serverUrl + "/" + repository + "/actions/runs/" + runId;
+	}
+
 	public static void postPullRequestComment(String repository, String prNumber, String githubToken, String commentBody)
 	{
 		try
@@ -2515,7 +2565,7 @@ public class GitHub_Informer_New {
 			return;
 		try
 		{
-			String message = "AI Review Report.\\n" + failureMessage;
+			String message = failureMessage;
 			if(cliqThreadId != null && !cliqThreadId.isBlank())
 			{
 				ArrayList<String> candidates = buildReplyToCandidates(cliqThreadId);
