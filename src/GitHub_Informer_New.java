@@ -772,6 +772,7 @@ public class GitHub_Informer_New {
 				String pullRequestDiffUrlRaw = (String) System.getenv("PULL_REQUEST_DIFF_URL");
 				String pullRequestBaseShaRaw = (String) System.getenv("PULL_REQUEST_BASE_SHA");
 				String pullRequestHeadShaRaw = (String) System.getenv("PULL_REQUEST_HEAD_SHA");
+				String pullRequestBeforeShaRaw = (String) System.getenv("PULL_REQUEST_BEFORE_SHA");
 				String prLabelsRaw = (String) System.getenv("PR_LABELS");
 				// Previous storage mode was PR marker comments ("comment").
 				// Keep default as comment so existing behavior remains backward-compatible.
@@ -918,6 +919,7 @@ public class GitHub_Informer_New {
 						pullRequestDiffUrlRaw,
 						pullRequestBaseShaRaw,
 						pullRequestHeadShaRaw,
+						pullRequestBeforeShaRaw,
 						githubToken,
 						CliqChannelLink,
 						aiThreadId,
@@ -1853,7 +1855,7 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
+	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String pullRequestBeforeSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
 	{
 		if(!isTrue(System.getenv("AI_REVIEW_ENABLED")))
 			return;
@@ -1862,13 +1864,37 @@ public class GitHub_Informer_New {
 
 		String triggerMode = defaultIfBlank(System.getenv("AI_REVIEW_TRIGGER"), "auto").trim().toLowerCase();
 		boolean runOnSync = isTrue(defaultIfBlank(System.getenv("AI_REVIEW_ON_SYNC"), "true"));
+		boolean incrementalOnSync = isTrue(defaultIfBlank(System.getenv("AI_REVIEW_INCREMENTAL_ON_SYNC"), "true"));
 		String triggerLabel = defaultIfBlank(System.getenv("AI_REVIEW_LABEL"), "");
+		String fullReviewLabel = defaultIfBlank(System.getenv("AI_REVIEW_FULL_LABEL"), "").trim();
 
-		if(!shouldRunAiReviewForEvent(triggerMode, triggerLabel, runOnSync, eventNameRaw, actionRaw, prLabelsRaw))
+		if(!shouldRunAiReviewForEvent(triggerMode, triggerLabel, runOnSync, eventNameRaw, actionRaw, prLabelsRaw, fullReviewLabel))
 			return;
 
+		// The "ready for merge" safety-net gate: when this run was triggered specifically by
+		// applying the full-review label, always do a full base...head review regardless of
+		// incremental settings, so any issue introduced earlier in the PR (and not re-flagged
+		// by incremental per-push reviews) is still caught once before merge.
+		boolean isFullReviewLabelEvent = "labeled".equals(actionRaw) && !fullReviewLabel.isBlank()
+			&& hasLabel(prLabelsRaw, fullReviewLabel);
+
+		// Only treat this as an incremental (delta-only) review when it is genuinely a
+		// "synchronize" push to an already-open PR AND we have a usable previous head SHA.
+		// GitHub sends a real commit SHA in event.before for a normal fast-forward push, but
+		// sends the all-zero SHA (or omits it) for the very first synchronize after certain
+		// edge cases (e.g. base branch changed) - in those cases there is nothing sensible to
+		// diff against incrementally, so we deliberately fall back to the full base...head diff.
+		boolean isSynchronizeEvent = "synchronize".equals(actionRaw);
+		boolean hasUsablePreviousHead = pullRequestBeforeSha != null && !pullRequestBeforeSha.isBlank()
+			&& !pullRequestBeforeSha.matches("0+");
+		String incrementalBaseSha = (incrementalOnSync && isSynchronizeEvent && hasUsablePreviousHead && !isFullReviewLabelEvent)
+			? pullRequestBeforeSha
+			: null;
+
 		String checkName = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
+		if(isFullReviewLabelEvent)
+			debug("AI Review Gate: '" + fullReviewLabel + "' label applied - running full base...head review as pre-merge safety net.");
+		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, incrementalBaseSha, githubToken);
 
 		if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 		{
@@ -1902,8 +1928,19 @@ public class GitHub_Informer_New {
 
 	public static boolean shouldRunAiReviewForEvent(String triggerMode, String triggerLabel, boolean runOnSync, String eventNameRaw, String actionRaw, String prLabelsRaw)
 	{
+		return shouldRunAiReviewForEvent(triggerMode, triggerLabel, runOnSync, eventNameRaw, actionRaw, prLabelsRaw, "");
+	}
+
+	public static boolean shouldRunAiReviewForEvent(String triggerMode, String triggerLabel, boolean runOnSync, String eventNameRaw, String actionRaw, String prLabelsRaw, String fullReviewLabel)
+	{
 		if(!"pull_request".equals(eventNameRaw) && !"pull_request_target".equals(eventNameRaw))
 			return false;
+
+		// The "ready for merge" full-review gate is independent of trigger mode: whenever this
+		// exact label is freshly applied to the PR, always run the review (it is an explicit,
+		// human-initiated request for a final pre-merge check), regardless of auto/label mode.
+		if("labeled".equals(actionRaw) && fullReviewLabel != null && !fullReviewLabel.isBlank() && hasLabel(prLabelsRaw, fullReviewLabel))
+			return true;
 
 		if("auto".equals(triggerMode))
 		{
@@ -1940,7 +1977,7 @@ public class GitHub_Informer_New {
 		return false;
 	}
 
-	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
+	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String incrementalBaseSha, String githubToken)
 	{
 		String aiToken = (String) System.getenv("AI_REVIEW_TOKEN");
 		String modelFromEnv = defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), "");
@@ -1951,20 +1988,38 @@ public class GitHub_Informer_New {
 		if(githubToken == null || githubToken.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "GITHUB_TOKEN is missing.");
 
-		DiffFetchResult diffResult = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
+		// When an incremental base is available (synchronize event with a usable previous head),
+		// diff previousHead...head so only the newly pushed commits are reviewed, instead of the
+		// full base...head diff which would re-flag issues from every prior commit on the PR.
+		boolean isIncremental = incrementalBaseSha != null && !incrementalBaseSha.isBlank();
+		String diffBaseSha = isIncremental ? incrementalBaseSha : pullRequestBaseSha;
+
+		DiffFetchResult diffResult = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, diffBaseSha, pullRequestHeadSha, githubToken, isIncremental);
+		if((diffResult.diff == null || diffResult.diff.isBlank()) && isIncremental)
+		{
+			// The incremental range came back empty (e.g. the "before" SHA is not an ancestor
+			// reachable via the compare API, or the previous head was already identical to a
+			// point on the new history - can happen after a rebase/force-push edge case that
+			// still produced a real, non-zero before SHA). Fall back to the full PR diff rather
+			// than silently reporting "no changes" when the PR clearly has content.
+			debug("Incremental diff (before=" + trimTo(defaultIfBlank(incrementalBaseSha, "?"), 12) + " head=" + trimTo(defaultIfBlank(pullRequestHeadSha, "?"), 12) + ") was empty. Falling back to full base...head diff.");
+			isIncremental = false;
+			diffBaseSha = pullRequestBaseSha;
+			diffResult = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, diffBaseSha, pullRequestHeadSha, githubToken, false);
+		}
 		if(diffResult.diff == null || diffResult.diff.isBlank())
 		{
 			if(diffResult.confirmedNoChangedFiles)
-				return new AiReviewDecision(true, "success", "AI review skipped: no file changes detected", "GitHub confirmed zero changed files between base " + trimTo(defaultIfBlank(pullRequestBaseSha, "?"), 12) + " and head " + trimTo(defaultIfBlank(pullRequestHeadSha, "?"), 12) + ". Nothing to review.");
+				return new AiReviewDecision(true, "success", "AI review skipped: no file changes detected", "GitHub confirmed zero changed files between base " + trimTo(defaultIfBlank(diffBaseSha, "?"), 12) + " and head " + trimTo(defaultIfBlank(pullRequestHeadSha, "?"), 12) + ". Nothing to review.");
 			return new AiReviewDecision(false, "failure", "AI Review Gate failed", "Unable to fetch PR diff from GitHub after retries. Failing AI review in strict mode.");
 		}
 		String diff = diffResult.diff;
 
-		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff);
+		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff, isIncremental);
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. These validation/error-handling/test requirements apply only to files that contain executable logic (for example JavaScript, TypeScript, Java, Python, form submission handlers, or API calls). Do not require validation, error handling, or test coverage for static content changes such as plain HTML markup, CSS-only changes, Markdown, documentation, or JSON/YAML configuration files that do not introduce new logic; review those only for correctness, broken links or references, and security concerns actually present in the diff. If a file has no applicable issues, do not fabricate a finding for it, and do not penalize the PR for lacking tests or validation that would not make sense for the type of file changed. When every changed file is free of genuine issues, respond with RESULT: PASS and a DETAILS list stating there were no issues found.";
+		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. These validation/error-handling/test requirements apply only to files that contain executable logic (for example JavaScript, TypeScript, Java, Python, form submission handlers, or API calls). Do not require validation, error handling, or test coverage for static content changes such as plain HTML markup, CSS-only changes, Markdown, documentation, or JSON/YAML configuration files that do not introduce new logic; review those only for correctness, broken links or references, and security concerns actually present in the diff. If a file has no applicable issues, do not fabricate a finding for it, and do not penalize the PR for lacking tests or validation that would not make sense for the type of file changed. When every changed file is free of genuine issues, respond with RESULT: PASS and a DETAILS list stating there were no issues found. When the provided diff is explicitly marked as an incremental review (only the most recently pushed commits, not the full pull request), judge ONLY the changes present in that diff: do not fail the review for missing tests, validation, or fixes that would only make sense to evaluate against the full cumulative PR, and do not re-raise issues that are not present in the given incremental diff.";
 
 		try
 		{
@@ -2099,7 +2154,7 @@ public class GitHub_Informer_New {
 	// so callers must treat it differently from "" (which means "endpoint didn't work / try again").
 	public static final String NO_CHANGED_FILES_SENTINEL = "\u0000NO_CHANGED_FILES\u0000";
 
-	public static String fetchPullRequestDiff(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
+	public static String fetchPullRequestDiff(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken, boolean isIncremental)
 	{
 		try
 		{
@@ -2115,10 +2170,22 @@ public class GitHub_Informer_New {
 				compareHeaders.put("Authorization", "Bearer " + githubToken);
 				String compareUrl = "https://api.github.com/repos/" + repository + "/compare/" + pullRequestBaseSha + "..." + pullRequestHeadSha;
 				HttpResult compareResponse = sendHttpRequest("GET", compareUrl, null, compareHeaders);
-				debug("AI diff fetch via compare API status=" + compareResponse.status + " base=" + pullRequestBaseSha + " head=" + pullRequestHeadSha);
+				debug("AI diff fetch via compare API status=" + compareResponse.status + " base=" + pullRequestBaseSha + " head=" + pullRequestHeadSha + " incremental=" + isIncremental);
 				if(compareResponse.status >= 200 && compareResponse.status <= 299 && compareResponse.body != null && !compareResponse.body.isBlank())
 					return compareResponse.body;
+				if(compareResponse.status >= 200 && compareResponse.status <= 299 && isEmptyJsonArrayBody(compareResponse.body))
+					return NO_CHANGED_FILES_SENTINEL;
 			}
+
+			// The files API, pulls/{n} diff-accept endpoint, and diff_url are all scoped to the
+			// PR NUMBER, not to a specific SHA range - they always reflect base...currentHead,
+			// never previousHead...currentHead. They are correct fallbacks for a full-PR diff,
+			// but would silently defeat incremental (delta-only) review by re-introducing the
+			// full cumulative diff whenever the SHA-pinned compare API above has a transient
+			// hiccup. So skip them entirely in incremental mode and let the retry loop keep
+			// retrying the compare API instead of falling back to the wrong range.
+			if(isIncremental)
+				return "";
 
 			// Files API is also SHA-independent-but-live; it reflects the PR's current head,
 			// recomputed per request, and rarely suffers the same diff-cache lag as the
@@ -2171,7 +2238,7 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	public static DiffFetchResult fetchPullRequestDiffWithRetries(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
+	public static DiffFetchResult fetchPullRequestDiffWithRetries(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken, boolean isIncremental)
 	{
 		// Pushing a new commit straight to a branch that already has an open PR fires the
 		// "synchronize" webhook almost instantly, but GitHub's backend needs a short window
@@ -2189,7 +2256,7 @@ public class GitHub_Informer_New {
 
 		for(int attempt = 1; attempt <= maxAttempts; attempt++)
 		{
-			String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
+			String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken, isIncremental);
 
 			// GitHub gave a definitive, authoritative "zero changed files" answer (HTTP 200,
 			// valid empty [] array). This is stable and will not change on retry, unlike a
@@ -2197,7 +2264,7 @@ public class GitHub_Informer_New {
 			// immediately instead of burning the remaining attempts and retry delays.
 			if(diff == NO_CHANGED_FILES_SENTINEL)
 			{
-				debug("AI diff fetch attempt " + attempt + "/" + maxAttempts + ": GitHub confirmed zero changed files for base=" + pullRequestBaseSha + " head=" + pullRequestHeadSha + ". Not retrying further.");
+				debug("AI diff fetch attempt " + attempt + "/" + maxAttempts + ": GitHub confirmed zero changed files for base=" + pullRequestBaseSha + " head=" + pullRequestHeadSha + " incremental=" + isIncremental + ". Not retrying further.");
 				return new DiffFetchResult("", true);
 			}
 
@@ -2206,7 +2273,7 @@ public class GitHub_Informer_New {
 			if(attempt < maxAttempts)
 			{
 				long delay = Math.min(baseDelayMs * attempt, maxDelayMs);
-				debug("AI diff fetch attempt " + attempt + "/" + maxAttempts + " failed. Retrying in " + delay + "ms...");
+				debug("AI diff fetch attempt " + attempt + "/" + maxAttempts + " failed (incremental=" + isIncremental + "). Retrying in " + delay + "ms...");
 				try
 				{
 					Thread.sleep(delay);
@@ -2365,7 +2432,7 @@ public class GitHub_Informer_New {
 		return sb.toString();
 	}
 
-	public static String buildAiPrompt(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String diff)
+	public static String buildAiPrompt(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String diff, boolean isIncremental)
 	{
 		StringBuilder prompt = new StringBuilder();
 		prompt.append("Repository: ").append(defaultIfBlank(repository, "")).append("\\n");
@@ -2373,6 +2440,8 @@ public class GitHub_Informer_New {
 		prompt.append("PR Title: ").append(defaultIfBlank(pullRequestTitle, "")).append("\\n");
 		prompt.append("PR URL: ").append(defaultIfBlank(pullRequestUrl, "")).append("\\n\\n");
 		prompt.append("PR Description:\\n").append(defaultIfBlank(pullRequestBody, "")).append("\\n\\n");
+		if(isIncremental)
+			prompt.append("Review Scope: INCREMENTAL. The diff below contains ONLY the commits pushed in the most recent update to this pull request, not the full cumulative pull request diff. Judge only these changes.\\n\\n");
 
 		int maxDiffChars = 120000;
 		DiffTruncationResult truncationResult = truncateDiffByFileBoundary(defaultIfBlank(diff, ""), maxDiffChars);
