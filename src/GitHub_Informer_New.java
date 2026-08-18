@@ -2175,6 +2175,37 @@ public class GitHub_Informer_New {
 					return compareResponse.body;
 				if(compareResponse.status >= 200 && compareResponse.status <= 299 && isEmptyJsonArrayBody(compareResponse.body))
 					return NO_CHANGED_FILES_SENTINEL;
+
+				// The .diff media type returns an empty 2xx body BOTH when GitHub hasn't finished
+				// indexing the range yet, AND when the range is confirmed to have zero file-level
+				// changes (e.g. a merge commit, or an incremental before...head range that nets to
+				// no textual diff). Those two cases are indistinguishable from this response alone,
+				// which is exactly what caused 10 full retries (~80s) to be burned in incremental
+				// mode against a range that would never resolve. Disambiguate immediately using the
+				// JSON compare API (same base/head, default Accept), which always reports an
+				// authoritative "files" array/count regardless of indexing lag on the .diff endpoint.
+				if(compareResponse.status >= 200 && compareResponse.status <= 299 && (compareResponse.body == null || compareResponse.body.isBlank()))
+				{
+					HashMap<String, String> jsonCompareHeaders = new HashMap<String, String>();
+					jsonCompareHeaders.put("Accept", "application/vnd.github+json");
+					jsonCompareHeaders.put("Authorization", "Bearer " + githubToken);
+					HttpResult jsonCompareResponse = sendHttpRequest("GET", compareUrl, null, jsonCompareHeaders);
+					debug("AI diff fetch: empty .diff body, checking JSON compare API status=" + jsonCompareResponse.status);
+					if(jsonCompareResponse.status >= 200 && jsonCompareResponse.status <= 299 && jsonCompareResponse.body != null)
+					{
+						int changedFiles = countFilenameEntries(jsonCompareResponse.body);
+						if(changedFiles == 0 && jsonCompareResponse.body.contains("\"status\""))
+						{
+							// GitHub authoritatively confirms this exact SHA range has no changed
+							// files (common for incremental before...head ranges that collapse to
+							// nothing, e.g. a merge commit or a no-op push). Stop retrying now
+							// instead of exhausting the full retry budget for a result that will
+							// never change.
+							debug("AI diff fetch: JSON compare API confirms zero changed files for this SHA range. Not retrying further.");
+							return NO_CHANGED_FILES_SENTINEL;
+						}
+					}
+				}
 			}
 
 			// The files API, pulls/{n} diff-accept endpoint, and diff_url are all scoped to the
