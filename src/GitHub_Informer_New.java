@@ -2084,14 +2084,25 @@ public class GitHub_Informer_New {
 		}
 		String diff = diffResult.diff;
 
-		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff, isIncremental);
+		// Strip removed ('-') lines from the diff before it is ever sent to the AI. The system
+		// prompt already instructs the model to ignore '-' lines, but LLMs are not 100% reliable
+		// at honoring unified-diff +/- semantics packed into an escaped JSON string, and have been
+		// observed flagging code that only exists on a removal line (i.e. code that was DELETED by
+		// this PR, not code that is actually present after the change). Removing that content at
+		// the data layer makes it structurally impossible for the AI to cite a removed line as an
+		// outstanding issue, instead of relying solely on prompt instructions. This is applied only
+		// here (after fetch/retry/staleness-check logic has already consumed the raw diff) so the
+		// stale-diff detection above, which only inspects "diff --git" headers, is unaffected.
+		String sanitizedDiff = stripRemovedLinesFromDiff(diff);
+
+		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, sanitizedDiff, isIncremental);
 		String provider = normalizeAiService(defaultIfBlank(resolvedProvider, detectAiProvider(aiToken, apiUrlFromEnv)));
 		if(provider.isBlank())
 			provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, resolvedModel);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
 		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. "
-			+ "DIFF FORMAT RULES (critical, read carefully): The diff uses standard unified diff format. Lines starting with '-' were REMOVED and are NO LONGER PRESENT in the code after this change; lines starting with '+' were ADDED and represent the CURRENT/NEW state of the code; lines starting with a space are unchanged context shown for reference only. You MUST evaluate the code quality, security, and correctness of ONLY the resulting/final state of the code, i.e. the '+' lines and unchanged context lines. NEVER report an issue, vulnerability, or violation whose offending code appears ONLY on a '-' (removed) line \u2014 if a problem such as an XSS sink, hardcoded secret, or bad pattern was deleted (shown as '-') and is not also present as a '+' or unchanged line elsewhere, that means it was FIXED, and you must treat it as resolved, not as an outstanding issue. Before citing any FILE/LINE/ISSUE, double-check that the exact offending code you are citing is present in a '+' or unchanged context line in the CURRENT diff, not merely mentioned in a '-' line. "
+			+ "DIFF FORMAT RULES (critical, read carefully): The diff uses unified diff format with all REMOVED ('-') lines already stripped out before reaching you \u2014 every line you see is either a file/hunk header (\"diff --git\", \"index\", \"--- a/...\", \"+++ b/...\", \"@@ ... @@\", mode/rename metadata), a line starting with '+' that was ADDED and represents the CURRENT/NEW state of the code, or an unchanged context line. There are no removed lines present in this diff at all, so you must NEVER assume, infer, or hallucinate the existence or content of code that is not literally shown to you. Evaluate the code quality, security, and correctness of ONLY the '+' lines and unchanged context lines that are actually present. If the diff for a file contains no '+' lines (for example only header/hunk lines remain because the only changes in that file were deletions), that means the net effect was a removal with no new code introduced \u2014 do not fabricate an issue for it. Before citing any FILE/LINE/ISSUE, double-check that the exact offending code you are citing is literally present as a '+' or unchanged context line in the diff shown to you. "
 			+ "Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. These validation/error-handling/test requirements apply only to files that contain executable logic (for example JavaScript, TypeScript, Java, Python, form submission handlers, or API calls). Do not require validation, error handling, or test coverage for static content changes such as plain HTML markup, CSS-only changes, Markdown, documentation, or JSON/YAML configuration files that do not introduce new logic; review those only for correctness, broken links or references, and security concerns actually present in the diff. If a file has no applicable issues, do not fabricate a finding for it, and do not penalize the PR for lacking tests or validation that would not make sense for the type of file changed. When every changed file is free of genuine issues, respond with RESULT: PASS and a DETAILS list stating there were no issues found. When the provided diff is explicitly marked as an incremental review (only the most recently pushed commits, not the full pull request), judge ONLY the changes present in that diff: do not fail the review for missing tests, validation, or fixes that would only make sense to evaluate against the full cumulative PR, and do not re-raise issues that are not present in the given incremental diff.";
 
 		try
@@ -2855,6 +2866,55 @@ public class GitHub_Informer_New {
 		if(count == 0)
 			return "";
 		return sb.toString();
+	}
+
+	// Removes removed ('-') lines from a unified diff while preserving everything the AI needs to
+	// still do a correct review: file headers ("diff --git", "index", "new/deleted file mode",
+	// "--- a/...", "+++ b/..."), hunk headers ("@@ ... @@", which carry the resulting line numbers
+	// for the '+'/context lines that follow), added ('+') lines, and unchanged context lines.
+	// This makes it structurally impossible for the AI to see - and therefore mistakenly flag -
+	// code that was deleted by the PR and no longer exists in the resulting file.
+	//
+	// Deliberately conservative: only lines that unambiguously start with a removal marker in a
+	// hunk body are dropped. Diff metadata lines that happen to start with '-' for unrelated
+	// reasons (e.g. "--- a/file", "---" YAML front matter inside a patch, "index 000...-000...")
+	// are matched and preserved explicitly BEFORE the generic '-' check so they are never dropped.
+	public static String stripRemovedLinesFromDiff(String diff)
+	{
+		if(diff == null || diff.isBlank())
+			return diff == null ? "" : diff;
+
+		String[] lines = diff.split("\n", -1);
+		StringBuilder kept = new StringBuilder();
+		for(int i = 0; i < lines.length; i++)
+		{
+			String line = lines[i];
+			boolean isFileHeaderLine = line.startsWith("diff --git ")
+				|| line.startsWith("index ")
+				|| line.startsWith("--- ")
+				|| line.startsWith("+++ ")
+				|| line.startsWith("new file mode")
+				|| line.startsWith("deleted file mode")
+				|| line.startsWith("old mode")
+				|| line.startsWith("new mode")
+				|| line.startsWith("similarity index")
+				|| line.startsWith("rename from")
+				|| line.startsWith("rename to")
+				|| line.startsWith("Binary files ")
+				|| line.startsWith("@@");
+
+			// A genuine removal line inside a hunk body starts with '-' but is NOT one of the
+			// file/hunk header forms above (those are checked first and always kept regardless
+			// of their leading character).
+			boolean isRemovedContentLine = !isFileHeaderLine && line.startsWith("-");
+			if(isRemovedContentLine)
+				continue;
+
+			kept.append(line);
+			if(i < lines.length - 1)
+				kept.append("\n");
+		}
+		return kept.toString();
 	}
 
 	public static String buildAiPrompt(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String diff, boolean isIncremental)
