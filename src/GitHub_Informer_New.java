@@ -1857,10 +1857,80 @@ public class GitHub_Informer_New {
 
 	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String pullRequestBeforeSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
 	{
-		if(!isTrue(System.getenv("AI_REVIEW_ENABLED")))
+		String configFileName = resolveAiReviewConfigFileName();
+		String configFileLabel = configFileName.isBlank() ? "the AI review config file (none configured; set ai-review-config-file to enable this)" : configFileName;
+		AiReviewYamlConfig yamlConfig = readCliqConnectorYamlAiReviewConfig(defaultIfBlank(System.getenv("GITHUB_WORKSPACE"), "."));
+		debug(configFileLabel + " ai_review config: fileFound=" + yamlConfig.fileFound + ", blockFound=" + yamlConfig.blockFound + ", enabled=" + yamlConfig.enabled + ", service=" + yamlConfig.service + ", model=" + yamlConfig.model);
+
+		boolean aiReviewEnabled = isTrue(System.getenv("AI_REVIEW_ENABLED"));
+		if(yamlConfig.blockFound && yamlConfig.enabled != null)
+			aiReviewEnabled = yamlConfig.enabled.booleanValue();
+		if(!aiReviewEnabled)
 			return;
 		if(prNumber == null || prNumber.isBlank())
 			return;
+
+		String aiToken = (String) System.getenv("AI_REVIEW_TOKEN");
+
+		// Req 4: AI review is enabled but no AI token was configured at all. Fail fast, before
+		// spending a diff-fetch cycle, with a clear PR comment and a failed check-run so the
+		// gate visibly blocks merge instead of silently no-op'ing.
+		if(aiToken == null || aiToken.isBlank())
+		{
+			String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
+			String missingTokenSummary = "AI review is enabled but no AI token was provided";
+			String missingTokenDetails = "AI review is enabled (via " + configFileLabel + " or the ai-review-enabled input) but no AI token was found.\n\n"
+				+ "Set the `ai-review-token` input in your workflow, backed by a repository secret (for example `secrets.AI_REVIEW_TOKEN`), and rerun.";
+			debug("AI Review Gate: failing fast, AI_REVIEW_TOKEN is missing while AI review is enabled.");
+			if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+				setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", missingTokenSummary, missingTokenDetails);
+			if(githubToken != null && !githubToken.isBlank())
+				postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, missingTokenSummary, missingTokenDetails));
+			return;
+		}
+
+		// Req: service must be declared in the config file once the ai_review block exists.
+		// Without a declared service we cannot safely pick a provider/model, so fail fast rather
+		// than silently guessing from the token (which is now only used for mismatch detection).
+		String declaredService = normalizeAiService(yamlConfig.service);
+		if(yamlConfig.blockFound && declaredService.isBlank())
+		{
+			String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
+			String missingServiceSummary = "AI review is enabled but no service was declared in " + configFileLabel;
+			String missingServiceDetails = "The `ai_review` block in " + configFileLabel + " is missing a valid `service` value.\n\n"
+				+ "Set `service` to one of `openai`, `claude`, or `gemini` under `ai_review:` in " + configFileLabel + " and rerun.";
+			debug("AI Review Gate: failing fast, ai_review.service missing/invalid in " + configFileLabel + ".");
+			if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+				setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", missingServiceSummary, missingServiceDetails);
+			if(githubToken != null && !githubToken.isBlank())
+				postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, missingServiceSummary, missingServiceDetails));
+			return;
+		}
+
+		// Req 3: declared service vs. token fingerprint mismatch check. Lenient by design -
+		// only flags a CONFIDENT mismatch against a different known provider's token format;
+		// unknown/custom/self-hosted token formats are trusted as-is against the declared service.
+		// Only runs when the user actually declared a service in the config file - never invents
+		// a service to check against, so this is a strict no-op when no config file is configured.
+		if(!declaredService.isBlank())
+		{
+			String mismatchReason = checkAiServiceTokenMismatch(declaredService, aiToken, configFileName);
+			if(mismatchReason != null)
+			{
+				String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
+				String mismatchSummary = "AI service mismatch between " + configFileLabel + " and the provided AI token";
+				String mismatchDetails = mismatchReason + "\n\nUpdate either the `ai-review-token` secret or the declared `service` in " + configFileLabel + " so they match, then rerun.";
+				debug("AI Review Gate: failing fast, " + mismatchReason);
+				if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+					setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", mismatchSummary, mismatchDetails);
+				if(githubToken != null && !githubToken.isBlank())
+					postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, mismatchSummary, mismatchDetails));
+				return;
+			}
+		}
+		String effectiveService = !declaredService.isBlank() ? declaredService : "openai";
+
+		String resolvedModel = resolveModelForProvider(effectiveService, defaultIfBlank(yamlConfig.model, defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), "")));
 
 		String triggerMode = defaultIfBlank(System.getenv("AI_REVIEW_TRIGGER"), "auto").trim().toLowerCase();
 		boolean runOnSync = isTrue(defaultIfBlank(System.getenv("AI_REVIEW_ON_SYNC"), "true"));
@@ -1894,7 +1964,7 @@ public class GitHub_Informer_New {
 		String checkName = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
 		if(isFullReviewLabelEvent)
 			debug("AI Review Gate: '" + fullReviewLabel + "' label applied - running full base...head review as pre-merge safety net.");
-		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, incrementalBaseSha, githubToken);
+		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, incrementalBaseSha, githubToken, effectiveService, resolvedModel);
 
 		if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 		{
@@ -1977,10 +2047,9 @@ public class GitHub_Informer_New {
 		return false;
 	}
 
-	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String incrementalBaseSha, String githubToken)
+	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String incrementalBaseSha, String githubToken, String resolvedProvider, String resolvedModel)
 	{
 		String aiToken = (String) System.getenv("AI_REVIEW_TOKEN");
-		String modelFromEnv = defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), "");
 		String apiUrlFromEnv = defaultIfBlank(System.getenv("AI_REVIEW_API_URL"), "");
 
 		if(aiToken == null || aiToken.isBlank())
@@ -2016,8 +2085,10 @@ public class GitHub_Informer_New {
 		String diff = diffResult.diff;
 
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff, isIncremental);
-		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
-		String model = resolveModelForProvider(provider, modelFromEnv);
+		String provider = normalizeAiService(defaultIfBlank(resolvedProvider, detectAiProvider(aiToken, apiUrlFromEnv)));
+		if(provider.isBlank())
+			provider = detectAiProvider(aiToken, apiUrlFromEnv);
+		String model = resolveModelForProvider(provider, resolvedModel);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
 		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. "
 			+ "DIFF FORMAT RULES (critical, read carefully): The diff uses standard unified diff format. Lines starting with '-' were REMOVED and are NO LONGER PRESENT in the code after this change; lines starting with '+' were ADDED and represent the CURRENT/NEW state of the code; lines starting with a space are unchanged context shown for reference only. You MUST evaluate the code quality, security, and correctness of ONLY the resulting/final state of the code, i.e. the '+' lines and unchanged context lines. NEVER report an issue, vulnerability, or violation whose offending code appears ONLY on a '-' (removed) line \u2014 if a problem such as an XSS sink, hardcoded secret, or bad pattern was deleted (shown as '-') and is not also present as a '+' or unchanged line elsewhere, that means it was FIXED, and you must treat it as resolved, not as an outstanding issue. Before citing any FILE/LINE/ISSUE, double-check that the exact offending code you are citing is present in a '+' or unchanged context line in the CURRENT diff, not merely mentioned in a '-' line. "
@@ -2050,6 +2121,230 @@ public class GitHub_Informer_New {
 		{
 			return new AiReviewDecision(false, "AI Review Gate failed", provider + " error: " + e.getMessage());
 		}
+	}
+
+	// Holds the parsed `ai_review:` block from the user-configured AI review config file (see
+	// "ai-review-config-file" input / resolveAiReviewConfigFileName()), if present. This is a
+	// deliberately minimal, hand-rolled reader (no external YAML library is available in this
+	// single-file, dependency-free program) scoped ONLY to the small fixed schema documented in
+	// the README:
+	//   ai_review:
+	//     enabled: true
+	//     service: openai   # openai | claude | gemini
+	//     model: gpt-4.1-mini   # optional
+	public static class AiReviewYamlConfig
+	{
+		public boolean fileFound;
+		public boolean blockFound;
+		public Boolean enabled;
+		public String service;
+		public String model;
+
+		public AiReviewYamlConfig(boolean fileFound, boolean blockFound, Boolean enabled, String service, String model)
+		{
+			this.fileFound = fileFound;
+			this.blockFound = blockFound;
+			this.enabled = enabled;
+			this.service = service;
+			this.model = model;
+		}
+	}
+
+	// There is NO default/assumed file name here on purpose. This action must not push users
+	// toward naming any file a particular way - a GitHub Actions workflow file already triggers
+	// correctly under any user-chosen name (e.g. .github/workflows/my-ci.yml), and the optional
+	// AI-review config file follows the same principle: it is only ever read when the caller
+	// explicitly opts in via the "ai-review-config-file" input (env var AI_REVIEW_CONFIG_FILE).
+	// When that input is left unset, config-file lookup is skipped entirely and behavior falls
+	// back to the plain action inputs, exactly as if this feature didn't exist.
+	public static String resolveAiReviewConfigFileName()
+	{
+		String configured = System.getenv("AI_REVIEW_CONFIG_FILE");
+		return configured == null ? "" : configured.trim();
+	}
+
+	public static AiReviewYamlConfig readCliqConnectorYamlAiReviewConfig(String workspacePath)
+	{
+		String configFileName = resolveAiReviewConfigFileName();
+		if(configFileName.isBlank())
+		{
+			debug("ai-review-config-file not set; skipping optional AI review config file lookup and using action inputs only.");
+			return new AiReviewYamlConfig(false, false, null, null, null);
+		}
+		try
+		{
+			Path yamlPath = Path.of(defaultIfBlank(workspacePath, "."), configFileName);
+			if(!Files.exists(yamlPath))
+			{
+				debug("Configured AI review file '" + configFileName + "' not found at " + yamlPath + ". Falling back to action inputs for AI review configuration.");
+				return new AiReviewYamlConfig(false, false, null, null, null);
+			}
+			var lines = Files.readAllLines(yamlPath, UTF_8);
+			return parseAiReviewYamlLines(lines);
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to read/parse '" + configFileName + "': " + e.getMessage());
+			return new AiReviewYamlConfig(true, false, null, null, null);
+		}
+	}
+
+	// Minimal indentation-aware parser: finds a top-level "ai_review:" key, then reads its
+	// nested "enabled:", "service:", "model:" keys (2+ space indented, one level deep only).
+	// Not a general-purpose YAML parser - intentionally scoped to this exact, documented shape.
+	public static AiReviewYamlConfig parseAiReviewYamlLines(java.util.List<String> lines)
+	{
+		boolean blockFound = false;
+		int blockIndent = -1;
+		Boolean enabled = null;
+		String service = null;
+		String model = null;
+
+		for(int i = 0; i < lines.size(); i++)
+		{
+			String rawLine = lines.get(i);
+			String withoutComment = stripYamlComment(rawLine);
+			if(withoutComment.isBlank())
+				continue;
+			int indent = countLeadingSpaces(withoutComment);
+			String trimmed = withoutComment.trim();
+
+			if(!blockFound)
+			{
+				if(indent == 0 && (trimmed.equals("ai_review:") || trimmed.startsWith("ai_review:")))
+				{
+					blockFound = true;
+					blockIndent = indent;
+				}
+				continue;
+			}
+
+			// We were inside the block; a subsequent line at the same or lower indent as
+			// "ai_review:" itself means the block has ended.
+			if(indent <= blockIndent)
+				break;
+
+			if(trimmed.startsWith("enabled:"))
+			{
+				String value = trimmed.substring("enabled:".length()).trim();
+				value = stripYamlQuotes(value);
+				if(!value.isBlank())
+					enabled = Boolean.valueOf(isTrue(value));
+			}
+			else if(trimmed.startsWith("service:"))
+			{
+				String value = trimmed.substring("service:".length()).trim();
+				service = stripYamlQuotes(value);
+			}
+			else if(trimmed.startsWith("model:"))
+			{
+				String value = trimmed.substring("model:".length()).trim();
+				model = stripYamlQuotes(value);
+			}
+		}
+
+		return new AiReviewYamlConfig(true, blockFound, enabled, service, model);
+	}
+
+	public static String stripYamlComment(String line)
+	{
+		if(line == null)
+			return "";
+		boolean inQuotes = false;
+		char quoteChar = '\0';
+		for(int i = 0; i < line.length(); i++)
+		{
+			char c = line.charAt(i);
+			if(inQuotes)
+			{
+				if(c == quoteChar)
+					inQuotes = false;
+			}
+			else if(c == '"' || c == '\'')
+			{
+				inQuotes = true;
+				quoteChar = c;
+			}
+			else if(c == '#')
+			{
+				return line.substring(0, i);
+			}
+		}
+		return line;
+	}
+
+	public static String stripYamlQuotes(String value)
+	{
+		String trimmed = defaultIfBlank(value, "").trim();
+		if(trimmed.length() >= 2)
+		{
+			char first = trimmed.charAt(0);
+			char last = trimmed.charAt(trimmed.length() - 1);
+			if((first == '"' && last == '"') || (first == '\'' && last == '\''))
+				return trimmed.substring(1, trimmed.length() - 1);
+		}
+		return trimmed;
+	}
+
+	public static int countLeadingSpaces(String line)
+	{
+		int count = 0;
+		while(count < line.length() && line.charAt(count) == ' ')
+			count++;
+		return count;
+	}
+
+	// Normalizes a declared/guessed provider name to one of the three supported services.
+	// Returns "" (blank) when the value doesn't match any known service, so callers can
+	// distinguish "not declared / unrecognized" from a valid selection.
+	public static String normalizeAiService(String rawService)
+	{
+		String normalized = defaultIfBlank(rawService, "").trim().toLowerCase();
+		if("openai".equals(normalized) || "claude".equals(normalized) || "gemini".equals(normalized))
+			return normalized;
+		return "";
+	}
+
+	// Pure fingerprint guess from the token's shape/prefix only - no URL involved - used
+	// exclusively to detect a confident mismatch against the user-declared service in the
+	// configured AI review config file. Returns "" when the token's format doesn't confidently
+	// match a known provider (e.g. a custom/enterprise/self-hosted key), so callers can treat
+	// that as "unknown, trust the declared service" rather than a false-positive mismatch.
+	public static String guessProviderFromToken(String token)
+	{
+		String normalizedToken = defaultIfBlank(token, "").trim();
+		if(normalizedToken.startsWith("sk-ant-"))
+			return "claude";
+		if(normalizedToken.startsWith("AIza"))
+			return "gemini";
+		if(normalizedToken.startsWith("sk-"))
+			return "openai";
+		return "";
+	}
+
+	// Returns null when there is no confident conflict; otherwise a human-readable reason.
+	// Lenient by design: an unrecognized token format never triggers a mismatch, only a
+	// CONFIDENT guess for a DIFFERENT known provider than the one declared does.
+	public static String checkAiServiceTokenMismatch(String declaredService, String token, String configFileName)
+	{
+		String declared = normalizeAiService(declaredService);
+		String guessed = guessProviderFromToken(token);
+		if(declared.isBlank() || guessed.isBlank())
+			return null;
+		if(declared.equals(guessed))
+			return null;
+		return defaultIfBlank(configFileName, "the AI review config file") + " declares `service: " + declared + "` but the provided AI token looks like a " + describeProviderForMessage(guessed) + " key.";
+	}
+
+	public static String describeProviderForMessage(String provider)
+	{
+		if("claude".equals(provider))
+			return "Claude/Anthropic";
+		if("gemini".equals(provider))
+			return "Gemini/Google";
+		if("openai".equals(provider))
+			return "OpenAI";
+		return provider;
 	}
 
 	public static String detectAiProvider(String token, String apiUrl)
@@ -2184,6 +2479,16 @@ public class GitHub_Informer_New {
 					// references files that are not present in the live head's changed-files set for
 					// a non-incremental (full base...head) fetch, treat it as stale and fall through
 					// to the PR-scoped endpoints below instead of handing stale content to the AI.
+					// DO NOT REMOVE: this check is load-bearing, not defensive dead code.
+					// Without it, a stale compare-API body can be silently accepted as the real
+					// diff for the new head. In practice this showed up as a vulnerable/buggy line
+					// being reviewed with hunks where that line only ever appears as a removal
+					// ("-"), because the AI was comparing against a cached diff computed for the
+					// PREVIOUS head instead of the current one - making an already-fixed or
+					// still-broken line look ambiguous or "already handled" to the reviewer logic.
+					// If you're tempted to delete this because it "never triggers" locally, don't:
+					// it only fires under GitHub's edge-cache race on rapid successive pushes,
+					// which is inherently hard to repro on demand but was observed in production.
 					if(!isIncremental && isCompareDiffStale(repository, prNumber, githubToken, compareResponse.body))
 					{
 						debug("AI diff fetch: compare API diff for head=" + pullRequestHeadSha + " looks stale relative to the live PR files list. Discarding and falling back to PR-scoped diff endpoints.");
@@ -2397,6 +2702,16 @@ public class GitHub_Informer_New {
 	// range. Fails "open" (returns false / not-stale) on any error, empty diff, or empty live
 	// files list, since strict mode should only discard a diff when we have positive evidence it
 	// disagrees with the live PR state, never on inconclusive data.
+	//
+	// WHY THIS EXISTS (do not remove as "unused"/"paranoid" code): this guards against a real,
+	// previously-observed production bug where GitHub's compare API served a cached diff for the
+	// PR's previous head right after a "synchronize" push. That stale diff made it look like a
+	// vulnerable line only appeared as removed ("-") with no corresponding added line, which the
+	// AI review logic misread as the issue already being resolved, letting an actual problem slip
+	// through the gate. This staleness check plus the DIFF FORMAT RULES handling of removal-only
+	// hunks together close that gap. It only reproduces under GitHub's edge-cache race condition
+	// on rapid successive pushes, so it will rarely fire in normal manual testing - that is
+	// expected, not a sign the check is dead.
 	public static boolean isCompareDiffStale(String repository, String prNumber, String githubToken, String compareDiffBody)
 	{
 		try
