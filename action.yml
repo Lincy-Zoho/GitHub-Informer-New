@@ -62,8 +62,10 @@ inputs:
   pull-request-target-message:
     description: "The Message to be Delivered to the Cliq Channel during a pull request target event"
   ai-review-enabled:
-    description: "Enable AI review gate for pull requests"
+    description: "Enable AI review gate for pull requests. If 'ai-review-config-file' is also set and that file has an 'ai_review.enabled' key, the file's value takes precedence."
     default: false
+  ai-review-config-file:
+    description: "Optional: path (relative to the repository root) to a YAML file where you declare an 'ai_review:' block (enabled/service/model), for teams who prefer editing a plain config file over workflow inputs. There is no default and no required/assumed file name - leave this blank (the default) to configure AI review purely through the ai-review-* inputs above, exactly like any other input on this action."
   ai-review-trigger:
     description: "AI review trigger mode: auto or label"
     default: auto
@@ -79,12 +81,12 @@ inputs:
     description: "Label name that, when applied to a PR, forces one final full base...head AI review (ignoring incremental mode) as a pre-merge safety net. Set blank to disable this gate."
     default: "ready-to-merge"
   ai-review-token:
-    description: "AI provider token for generating review"
+    description: "AI provider token for generating review. Provide this via a repository secret, e.g. ${{ secrets.AI_REVIEW_TOKEN }}. Never place the token in a config file."
   ai-review-api-url:
     description: "AI provider endpoint (optional; auto-resolved for OpenAI, Claude, and Gemini)"
     default: "https://api.openai.com/v1/chat/completions"
   ai-review-model:
-    description: "AI model for review generation"
+    description: "AI model for review generation. If 'ai-review-config-file' is set and declares 'ai_review.model', that value takes precedence. Falls back to a per-service default (gpt-4.1-mini / claude-3-5-sonnet-latest / gemini-1.5-pro) when neither is set."
     default: "gpt-4.1-mini"
   ai-review-check-name:
     description: "GitHub required check name for AI review gate"
@@ -388,6 +390,7 @@ runs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AI_REVIEW_ENABLED: ${{ inputs.ai-review-enabled }}
+          AI_REVIEW_CONFIG_FILE: ${{ inputs.ai-review-config-file }}
           AI_REVIEW_TRIGGER: ${{ inputs.ai-review-trigger }}
           AI_REVIEW_ON_SYNC: ${{ inputs.ai-review-on-sync }}
           AI_REVIEW_INCREMENTAL_ON_SYNC: ${{ inputs.ai-review-incremental-on-sync }}
@@ -400,6 +403,7 @@ runs:
           AI_REVIEW_CLIQ_SUMMARY_LENGTH: ${{ inputs.ai-review-cliq-summary-length }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
         run: |
           JAVA=$JAVA_HOME_19_X64/bin/java
           CONNECTOR=$GITHUB_ACTION_PATH/src/GitHub_Informer_New.java
