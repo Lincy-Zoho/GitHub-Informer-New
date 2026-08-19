@@ -81,7 +81,7 @@ inputs:
     description: "Label name that, when applied to a PR, forces one final full base...head AI review (ignoring incremental mode) as a pre-merge safety net. Set blank to disable this gate."
     default: "ready-to-merge"
   ai-review-token:
-    description: "AI provider token for generating review. Provide this via a repository secret, e.g. ${{ secrets.AI_REVIEW_TOKEN }}. Never place the token in a config file."
+    description: "AI provider token for generating review. Provide this via a repository secret, e.g. secrets.AI_REVIEW_TOKEN. Never place the token in a config file."
   ai-review-api-url:
     description: "AI provider endpoint (optional; auto-resolved for OpenAI, Claude, and Gemini)"
     default: "https://api.openai.com/v1/chat/completions"
