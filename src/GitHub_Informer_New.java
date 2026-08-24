@@ -2095,6 +2095,15 @@ public class GitHub_Informer_New {
 		// stale-diff detection above, which only inspects "diff --git" headers, is unaffected.
 		String sanitizedDiff = stripRemovedLinesFromDiff(diff);
 
+		// Deterministic safety net: certain classes of vulnerability (hardcoded secrets, obvious
+		// DOM-based XSS sinks) must never depend solely on an LLM correctly noticing them inside
+		// files it has been told to treat leniently (e.g. plain HTML/static content). This scan
+		// runs on the ADDED lines only (sanitizedDiff already has '-' lines stripped) and fails
+		// the gate immediately on a match, independent of what the AI provider returns.
+		String staticFindings = runStaticSecurityChecks(sanitizedDiff);
+		if(staticFindings != null && !staticFindings.isBlank())
+			return new AiReviewDecision(false, "AI Review Gate failed", "Static security check found blocking issues (independent of AI verdict).", staticFindings);
+
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, sanitizedDiff, isIncremental);
 		String provider = normalizeAiService(defaultIfBlank(resolvedProvider, detectAiProvider(aiToken, apiUrlFromEnv)));
 		if(provider.isBlank())
@@ -2132,6 +2141,115 @@ public class GitHub_Informer_New {
 		{
 			return new AiReviewDecision(false, "AI Review Gate failed", provider + " error: " + e.getMessage());
 		}
+	}
+
+	// Deterministic, regex-based pre-check applied to the ADDED lines of a PR diff, run BEFORE
+	// and INDEPENDENTLY of the AI provider call. This exists because the AI system prompt
+	// intentionally relaxes scrutiny for "static content" files (plain HTML/CSS/Markdown/JSON/
+	// YAML) so it doesn't demand tests/validation for markup-only changes - but that same leniency
+	// can cause an LLM to under-scrutinize executable <script> blocks embedded inside an .html
+	// file, or to miss an obvious hardcoded secret because "it's just a config file". These
+	// checks intentionally do NOT depend on file extension: they scan every added line in the
+	// diff, in every changed file, so a vulnerability cannot escape review just because it lives
+	// inside a file type the AI has been told to treat leniently. Keep this list small and high-
+	// confidence (few false positives) since a match hard-fails the gate with no AI involved.
+	public static final class StaticSecurityRule
+	{
+		public final String id;
+		public final Pattern pattern;
+		public final String issue;
+		public final String fix;
+		public StaticSecurityRule(String id, String regex, String issue, String fix)
+		{
+			this.id = id;
+			this.pattern = Pattern.compile(regex);
+			this.issue = issue;
+			this.fix = fix;
+		}
+	}
+
+	private static final ArrayList<StaticSecurityRule> STATIC_SECURITY_RULES = buildStaticSecurityRules();
+
+	private static ArrayList<StaticSecurityRule> buildStaticSecurityRules()
+	{
+		ArrayList<StaticSecurityRule> rules = new ArrayList<StaticSecurityRule>();
+		rules.add(new StaticSecurityRule(
+			"DOM_XSS_SINK",
+			"(?i)\\.(?:innerHTML|outerHTML)\\s*=\\s*(?!\\s*[\"'`]\\s*[\"'`]\\s*;)(?:.*\\b(?:location\\.(?:hash|search|href)|document\\.URL|document\\.referrer|window\\.name|URLSearchParams)\\b)",
+			"Untrusted, attacker-controllable input (URL hash/search/referrer/window.name) is written directly into innerHTML/outerHTML without sanitization or encoding, creating a DOM-based XSS sink.",
+			"Never assign untrusted input directly to innerHTML/outerHTML. Use textContent for plain text, or sanitize with a library such as DOMPurify before insertion."
+		));
+		rules.add(new StaticSecurityRule(
+			"HARDCODED_SECRET",
+			"(?i)\\b(?:api[_-]?key|secret|token|password|passwd|access[_-]?key|auth[_-]?token)\\b\\s*[:=]\\s*[\"'`](?:sk-|ghp_|xox[baprs]-|AIza|AKIA|glpat-)[A-Za-z0-9_\\-]{6,}[\"'`]",
+			"A hardcoded credential/API key/secret literal was added directly in source.",
+			"Remove the hardcoded secret and load it from a secret manager or environment variable (e.g. repository/organization secret) instead."
+		));
+		rules.add(new StaticSecurityRule(
+			"EVAL_USAGE",
+			"(?i)\\beval\\s*\\(|\\bnew\\s+Function\\s*\\(",
+			"Use of eval()/new Function() on potentially dynamic input enables arbitrary code execution.",
+			"Avoid eval/new Function entirely; use JSON.parse for data or a safe, explicit code path instead of dynamic evaluation."
+		));
+		return rules;
+	}
+
+	// Scans only '+' (added) lines of a unified diff (the '-' lines are expected to already be
+	// stripped by the caller via stripRemovedLinesFromDiff). Returns a formatted DETAILS-style
+	// findings string (same shape the AI would produce) or null/blank when nothing matched.
+	public static String runStaticSecurityChecks(String sanitizedDiff)
+	{
+		if(sanitizedDiff == null || sanitizedDiff.isBlank())
+			return null;
+
+		String currentFile = "(unknown file)";
+		int lineNumberInNewFile = 0;
+		boolean haveLineNumber = false;
+		ArrayList<String> findings = new ArrayList<String>();
+		Pattern fileHeaderPattern = Pattern.compile("^\\+\\+\\+ b/(.*)$");
+		Pattern hunkHeaderPattern = Pattern.compile("^@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@");
+
+		for(String rawLine : sanitizedDiff.split("\n", -1))
+		{
+			Matcher fileMatcher = fileHeaderPattern.matcher(rawLine);
+			if(fileMatcher.matches())
+			{
+				currentFile = fileMatcher.group(1);
+				haveLineNumber = false;
+				continue;
+			}
+			Matcher hunkMatcher = hunkHeaderPattern.matcher(rawLine);
+			if(hunkMatcher.find())
+			{
+				lineNumberInNewFile = Integer.parseInt(hunkMatcher.group(1));
+				haveLineNumber = true;
+				continue;
+			}
+			if(rawLine.startsWith("+++") || rawLine.startsWith("---") || rawLine.startsWith("diff --git") || rawLine.startsWith("index "))
+				continue;
+			if(!rawLine.startsWith("+"))
+				continue;
+
+			String addedContent = rawLine.substring(1);
+			for(StaticSecurityRule rule : STATIC_SECURITY_RULES)
+			{
+				if(rule.pattern.matcher(addedContent).find())
+				{
+					String lineRef = haveLineNumber ? String.valueOf(lineNumberInNewFile) : "n/a";
+					findings.add("FILE: " + currentFile + ", LINE: " + lineRef + ", ISSUE: [" + rule.id + "] " + rule.issue + ", FIX: " + rule.fix);
+				}
+			}
+			if(haveLineNumber)
+				lineNumberInNewFile++;
+		}
+
+		if(findings.isEmpty())
+			return null;
+
+		StringBuilder details = new StringBuilder();
+		for(int i = 0; i < findings.size(); i++)
+			details.append(i + 1).append(". ").append(findings.get(i)).append("\n");
+		return details.toString().trim();
 	}
 
 	// Holds the parsed `ai_review:` block from the user-configured AI review config file (see
