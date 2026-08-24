@@ -2084,6 +2084,19 @@ public class GitHub_Informer_New {
 		}
 		String diff = diffResult.diff;
 
+		// Deterministic safety net #1 (REMOVALS): must run on the RAW diff, BEFORE '-' lines are
+		// stripped below. A PR that deletes a security control (an auth/permission check, input
+		// sanitization, validation, encoding, a try/catch guarding a sensitive call, etc.) without
+		// adding an equivalent replacement shows up ONLY as '-' lines with no corresponding '+'
+		// line. Since the addition-side checks and the AI system prompt both intentionally only
+		// ever see '+' lines (to stop the AI hallucinating issues on deleted code), a pure-deletion
+		// regression like this would otherwise be structurally invisible to every reviewer in the
+		// pipeline and would always pass. This check closes that blind spot independently of the
+		// addition-side checks and independently of the AI verdict.
+		String removalFindings = runRemovalSecurityChecks(diff);
+		if(removalFindings != null && !removalFindings.isBlank())
+			return new AiReviewDecision(false, "AI Review Gate failed", "Static security check found blocking issues in removed code (independent of AI verdict).", removalFindings);
+
 		// Strip removed ('-') lines from the diff before it is ever sent to the AI. The system
 		// prompt already instructs the model to ignore '-' lines, but LLMs are not 100% reliable
 		// at honoring unified-diff +/- semantics packed into an escaped JSON string, and have been
@@ -2095,11 +2108,12 @@ public class GitHub_Informer_New {
 		// stale-diff detection above, which only inspects "diff --git" headers, is unaffected.
 		String sanitizedDiff = stripRemovedLinesFromDiff(diff);
 
-		// Deterministic safety net: certain classes of vulnerability (hardcoded secrets, obvious
-		// DOM-based XSS sinks) must never depend solely on an LLM correctly noticing them inside
-		// files it has been told to treat leniently (e.g. plain HTML/static content). This scan
-		// runs on the ADDED lines only (sanitizedDiff already has '-' lines stripped) and fails
-		// the gate immediately on a match, independent of what the AI provider returns.
+		// Deterministic safety net #2 (ADDITIONS): certain classes of vulnerability (hardcoded
+		// secrets, obvious DOM-based XSS sinks) must never depend solely on an LLM correctly
+		// noticing them inside files it has been told to treat leniently (e.g. plain HTML/static
+		// content). This scan runs on the ADDED lines only (sanitizedDiff already has '-' lines
+		// stripped) and fails the gate immediately on a match, independent of what the AI provider
+		// returns.
 		String staticFindings = runStaticSecurityChecks(sanitizedDiff);
 		if(staticFindings != null && !staticFindings.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "Static security check found blocking issues (independent of AI verdict).", staticFindings);
@@ -2241,6 +2255,152 @@ public class GitHub_Informer_New {
 			}
 			if(haveLineNumber)
 				lineNumberInNewFile++;
+		}
+
+		if(findings.isEmpty())
+			return null;
+
+		StringBuilder details = new StringBuilder();
+		for(int i = 0; i < findings.size(); i++)
+			details.append(i + 1).append(". ").append(findings.get(i)).append("\n");
+		return details.toString().trim();
+	}
+
+	// Deterministic, regex-based pre-check applied to the REMOVED ('-') lines of a PR's RAW diff,
+	// run BEFORE stripRemovedLinesFromDiff() ever deletes that content, and BEFORE and INDEPENDENTLY
+	// of the AI provider call. This exists because deleting a security control (an auth/permission
+	// check, input validation, sanitization/encoding call, a try/catch guarding a sensitive
+	// operation, a rate limiter, etc.) without adding a replacement produces a diff made up
+	// entirely of '-' lines with no corresponding '+' line for that control. Every other check in
+	// this pipeline (runStaticSecurityChecks, and the AI itself via its system prompt) deliberately
+	// only looks at '+' lines, on purpose, to stop the AI hallucinating issues on code that no
+	// longer exists - but that same design choice makes a pure-deletion regression structurally
+	// invisible unless something explicitly looks at what was removed. Keep this list small and
+	// high-confidence (few false positives) since a match hard-fails the gate with no AI involved.
+	public static final class RemovalSecurityRule
+	{
+		public final String id;
+		public final Pattern pattern;
+		public final String issue;
+		public final String fix;
+		public RemovalSecurityRule(String id, String regex, String issue, String fix)
+		{
+			this.id = id;
+			this.pattern = Pattern.compile(regex);
+			this.issue = issue;
+			this.fix = fix;
+		}
+	}
+
+	private static final ArrayList<RemovalSecurityRule> REMOVAL_SECURITY_RULES = buildRemovalSecurityRules();
+
+	private static ArrayList<RemovalSecurityRule> buildRemovalSecurityRules()
+	{
+		ArrayList<RemovalSecurityRule> rules = new ArrayList<RemovalSecurityRule>();
+		rules.add(new RemovalSecurityRule(
+			"AUTH_CHECK_REMOVED",
+			"(?i)\\b(?:if\\s*\\(.*\\b(?:is)?(?:authenticated|authorized|logged[_-]?in|has(?:Role|Permission|Access)|can(?:Access|Edit|Delete|View)|require(?:Auth|Login|Role|Permission))\\b.*\\)|@(?:PreAuthorize|Secured|RolesAllowed|login_required|permission_required|IsAuthenticated)\\b)",
+			"An authentication/authorization/permission check was removed without an equivalent replacement.",
+			"Restore the removed auth/permission check, or confirm and document why access control is no longer required for this code path before merging."
+		));
+		rules.add(new RemovalSecurityRule(
+			"SANITIZATION_REMOVED",
+			"(?i)\\b(?:DOMPurify\\.sanitize|escapeHtml|encodeURIComponent|encodeURI|htmlspecialchars|sanitize(?:Input|Html|Output|Url)?|StringEscapeUtils\\.\\w+|bleach\\.clean|Jsoup\\.clean)\\s*\\(",
+			"A call that sanitized/escaped/encoded untrusted input or output was removed without an equivalent replacement.",
+			"Restore equivalent sanitization/encoding at this point, or verify the input is validated/trusted through another mechanism before merging."
+		));
+		rules.add(new RemovalSecurityRule(
+			"VALIDATION_REMOVED",
+			"(?i)\\b(?:if\\s*\\(\\s*!?\\s*(?:is)?Valid|validate(?:Input|Request|Params|Payload|User|Email|Token)?\\s*\\(|assert(?:NotNull|True|False)?\\s*\\(.*\\b(?:input|param|request|token|user)\\b)",
+			"Input validation logic was removed without an equivalent replacement.",
+			"Restore equivalent input validation, or confirm the input is now validated upstream before merging."
+		));
+		rules.add(new RemovalSecurityRule(
+			"CRYPTO_OR_SECRET_CHECK_REMOVED",
+			"(?i)\\b(?:verify(?:Signature|Token|Hmac|Jwt)|MessageDigest\\.isEqual|hash_equals|constant_?time_?compare|checkSignature)\\s*\\(",
+			"A cryptographic verification / signature / token comparison check was removed without an equivalent replacement.",
+			"Restore the removed verification step, or confirm the trust boundary is still enforced elsewhere before merging."
+		));
+		return rules;
+	}
+
+	// Scans only '-' (removed) lines of the RAW unified diff (must be called BEFORE
+	// stripRemovedLinesFromDiff() strips them out). Returns a formatted DETAILS-style findings
+	// string (same shape the AI/addition-side checker would produce) or null/blank when nothing
+	// matched. Line numbers for pure removals are reported against the OLD file (the "-" side of
+	// the hunk header), since a purely deleted line has no position in the new file.
+	public static String runRemovalSecurityChecks(String rawDiff)
+	{
+		if(rawDiff == null || rawDiff.isBlank())
+			return null;
+
+		String currentFile = "(unknown file)";
+		int lineNumberInOldFile = 0;
+		boolean haveLineNumber = false;
+		ArrayList<String> findings = new ArrayList<String>();
+		Pattern fileHeaderPattern = Pattern.compile("^--- a/(.*)$");
+		Pattern altFileHeaderPattern = Pattern.compile("^\\+\\+\\+ b/(.*)$");
+		Pattern hunkHeaderPattern = Pattern.compile("^@@ -(\\d+)(?:,\\d+)? \\+\\d+(?:,\\d+)? @@");
+
+		String lastSeenFileFromMinus = null;
+		for(String rawLine : rawDiff.split("\n", -1))
+		{
+			Matcher minusFileMatcher = fileHeaderPattern.matcher(rawLine);
+			if(minusFileMatcher.matches())
+			{
+				String candidate = minusFileMatcher.group(1);
+				if(!"/dev/null".equals(candidate))
+					lastSeenFileFromMinus = candidate;
+				continue;
+			}
+			Matcher plusFileMatcher = altFileHeaderPattern.matcher(rawLine);
+			if(plusFileMatcher.matches())
+			{
+				String candidate = plusFileMatcher.group(1);
+				currentFile = !"/dev/null".equals(candidate) ? candidate : defaultIfBlank(lastSeenFileFromMinus, currentFile);
+				haveLineNumber = false;
+				continue;
+			}
+			Matcher hunkMatcher = hunkHeaderPattern.matcher(rawLine);
+			if(hunkMatcher.find())
+			{
+				lineNumberInOldFile = Integer.parseInt(hunkMatcher.group(1));
+				haveLineNumber = true;
+				continue;
+			}
+			boolean isFileHeaderLine = rawLine.startsWith("diff --git ")
+				|| rawLine.startsWith("index ")
+				|| rawLine.startsWith("new file mode")
+				|| rawLine.startsWith("deleted file mode")
+				|| rawLine.startsWith("old mode")
+				|| rawLine.startsWith("new mode")
+				|| rawLine.startsWith("similarity index")
+				|| rawLine.startsWith("rename from")
+				|| rawLine.startsWith("rename to")
+				|| rawLine.startsWith("Binary files ");
+			if(isFileHeaderLine)
+				continue;
+
+			if(rawLine.startsWith("+"))
+				continue; // additions handled by runStaticSecurityChecks; not relevant here
+			if(!rawLine.startsWith("-"))
+			{
+				if(haveLineNumber)
+					lineNumberInOldFile++; // unchanged context line advances the old-file counter too
+				continue;
+			}
+
+			String removedContent = rawLine.substring(1);
+			for(RemovalSecurityRule rule : REMOVAL_SECURITY_RULES)
+			{
+				if(rule.pattern.matcher(removedContent).find())
+				{
+					String lineRef = haveLineNumber ? String.valueOf(lineNumberInOldFile) : "n/a";
+					findings.add("FILE: " + currentFile + ", LINE: " + lineRef + " (removed), ISSUE: [" + rule.id + "] " + rule.issue + ", FIX: " + rule.fix);
+				}
+			}
+			if(haveLineNumber)
+				lineNumberInOldFile++;
 		}
 
 		if(findings.isEmpty())
