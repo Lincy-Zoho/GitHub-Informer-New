@@ -1889,25 +1889,30 @@ public class GitHub_Informer_New {
 			return;
 		}
 
-		// Req: service is always user-declared in the ai-review-config-file YAML, never guessed
-		// and never defaulted. This covers both cases with one check: the block exists but
-		// `service` is missing/invalid inside it, AND no config file/ai_review block was ever
-		// provided at all (e.g. ai-review-enabled was set to true via a plain workflow input with
-		// no config file). Without a declared service we cannot safely pick a provider, model, or
-		// API URL, so fail fast rather than silently guessing from the token (which is now only
-		// ever used for mismatch detection, not provider selection) or defaulting to OpenAI.
+		// Req: service must always be explicitly user-declared, either in the ai-review-config-file
+		// YAML (config file value wins when present) or via the ai-review-service plain workflow
+		// input (AI_REVIEW_SERVICE env var) for teams who want everything in one place without a
+		// second file. Never guessed and never defaulted otherwise. This covers both cases with one
+		// check: the block exists but `service` is missing/invalid inside it, AND no config file/
+		// ai_review block/plain input was ever provided at all. A declared service is still always
+		// required up front, even though the token can go on to override it below: it's the
+		// mandatory fallback for when the token's format is unrecognized (custom/self-hosted/
+		// enterprise keys), so we still fail fast here rather than defaulting to OpenAI.
 		String declaredService = normalizeAiService(yamlConfig.service);
+		if(declaredService.isBlank())
+			declaredService = normalizeAiService(System.getenv("AI_REVIEW_SERVICE"));
 		if(declaredService.isBlank())
 		{
 			String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
 			String missingServiceSummary = yamlConfig.blockFound
 				? "AI review is enabled but no service was declared in " + configFileLabel
-				: "AI review is enabled but no ai-review-config-file was declared";
+				: "AI review is enabled but no service was declared";
 			String missingServiceDetails = yamlConfig.blockFound
 				? "The `ai_review` block in " + configFileLabel + " is missing a valid `service` value.\n\n"
 					+ "Set `service` to one of `openai`, `claude`, or `gemini` under `ai_review:` in " + configFileLabel + " and rerun."
-				: "Set `ai-review-config-file` to point at a YAML file containing an `ai_review:` block with `service: openai|claude|gemini` (and optionally `model:`), then rerun.";
-			debug("AI Review Gate: failing fast, ai_review.service missing/invalid or no config file declared (" + configFileLabel + ").");
+				: "Set the `ai-review-service` input to one of `openai`, `claude`, or `gemini` in your workflow file, "
+					+ "or set `ai-review-config-file` to point at a YAML file containing an `ai_review:` block with `service: openai|claude|gemini` (and optionally `model:`), then rerun.";
+			debug("AI Review Gate: failing fast, ai_review.service missing/invalid, no ai-review-service input, and no config file declared (" + configFileLabel + ").");
 			if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 				setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", missingServiceSummary, missingServiceDetails);
 			if(githubToken != null && !githubToken.isBlank())
@@ -1915,42 +1920,44 @@ public class GitHub_Informer_New {
 			return;
 		}
 
-		// Req 3: declared service vs. token fingerprint mismatch check. Lenient by design -
-		// only flags a CONFIDENT mismatch against a different known provider's token format;
-		// unknown/custom/self-hosted token formats are trusted as-is against the declared service.
-		// Only runs when the user actually declared a service in the config file - never invents
-		// a service to check against, so this is a strict no-op when no config file is configured.
-		if(!declaredService.isBlank())
-		{
-			String mismatchReason = checkAiServiceTokenMismatch(declaredService, aiToken, configFileName);
-			if(mismatchReason != null)
-			{
-				String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-				String mismatchSummary = "AI service mismatch between " + configFileLabel + " and the provided AI token";
-				String mismatchDetails = mismatchReason + "\n\nUpdate either the `ai-review-token` secret or the declared `service` in " + configFileLabel + " so they match, then rerun.";
-				debug("AI Review Gate: failing fast, " + mismatchReason);
-				if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
-					setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", mismatchSummary, mismatchDetails);
-				if(githubToken != null && !githubToken.isBlank())
-					postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, mismatchSummary, mismatchDetails));
-				return;
-			}
-		}
+		// Req 3 (REVISED): the AI provider token is the AUTHORITATIVE source of truth for ROUTING
+		// ONLY (URL + request/response payload shaping) whenever its prefix confidently identifies
+		// a known provider (sk-ant- -> claude, AIza -> gemini, sk- -> openai). This overrides the
+		// declared service (config file or ai-review-service input) for routing purposes for the
+		// rest of this run. It deliberately does NOT touch model default/validation - see the model
+		// resolution block below, which always keys off declaredService (explicit-model case) so a
+		// user's chosen model can never be silently rejected/swapped just because their token's
+		// format doesn't match their declared service. The declared service remains the fallback
+		// used for routing only when the token's format is unrecognized (custom/self-hosted/
+		// enterprise keys), and is still required up front (see the fail-fast gate above) both for
+		// that fallback case and as the permanent source of truth for the model.
+		String tokenGuessedService = guessProviderFromToken(aiToken);
 		String effectiveService = declaredService;
+		if(!tokenGuessedService.isBlank() && !tokenGuessedService.equals(declaredService))
+		{
+			debug("AI Review Gate: ai-review-token looks like a " + describeProviderForMessage(tokenGuessedService) + " key; overriding declared service `" + declaredService + "` (from " + configFileLabel + ") with `" + tokenGuessedService + "` for this run. Update the declared service to match your token to remove this notice.");
+			effectiveService = tokenGuessedService;
+		}
 
-		// Req: if the user provided a model in the config file, verify it before using it;
-		// otherwise fall back to the latest model for the declared service. AI_REVIEW_MODEL env
-		// var is retained only as a secondary source for callers who prefer setting it via a
-		// plain workflow input rather than the config file - the config file value always wins.
+		// Req (REVISED): model choice stays tied to the user's DECLARED service (config file /
+		// ai-review-service input), never to the token-overridden effectiveService above. Routing
+		// (URL + request/response payload shaping) is allowed to switch dynamically based on the
+		// token's format, but the model is something the user explicitly picked for the provider
+		// they intended - silently re-validating/re-defaulting it against whatever the token
+		// happened to guess would fight the user's own YAML config and could reject a perfectly
+        // valid model (or swap in the wrong provider's default) for no reason they specified.
+		// AI_REVIEW_MODEL env var is retained only as a secondary source for callers who prefer
+		// setting it via a plain workflow input rather than the config file - the config file
+		// value always wins.
 		String userConfiguredModel = defaultIfBlank(yamlConfig.model, defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), ""));
 		if(!userConfiguredModel.isBlank())
 		{
-			String modelValidationError = validateModelForProvider(effectiveService, userConfiguredModel);
+			String modelValidationError = validateModelForProvider(declaredService, userConfiguredModel);
 			if(modelValidationError != null)
 			{
 				String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
 				String invalidModelSummary = "Configured AI model does not match the declared service";
-				String invalidModelDetails = modelValidationError + "\n\nEither fix the `model` value in " + configFileLabel + " or remove it to automatically use the latest model for `service: " + effectiveService + "`.";
+				String invalidModelDetails = modelValidationError + "\n\nEither fix the `model` value in " + configFileLabel + " or remove it to automatically use the latest model for `service: " + declaredService + "`.";
 				debug("AI Review Gate: failing fast, " + modelValidationError);
 				if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 					setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", invalidModelSummary, invalidModelDetails);
@@ -1959,7 +1966,16 @@ public class GitHub_Informer_New {
 				return;
 			}
 		}
-		String resolvedModel = resolveModelForProvider(effectiveService, userConfiguredModel);
+		// When the user gave NO explicit model, there is no user intent to protect, so the default
+		// picked here must belong to whichever provider actually ends up handling the HTTP call
+		// (effectiveService, which may have been token-overridden above) - otherwise a plain
+		// "declaredService"-flavoured default model name (e.g. a claude-* model) would get sent to
+		// a different vendor's endpoint (e.g. OpenAI's) and fail outright. When the user DID give
+		// an explicit model, it was already validated against declaredService above and must be
+		// passed through completely unchanged here.
+		String resolvedModel = userConfiguredModel.isBlank()
+			? resolveModelForProvider(effectiveService, "")
+			: resolveModelForProvider(declaredService, userConfiguredModel);
 
 		String triggerMode = defaultIfBlank(System.getenv("AI_REVIEW_TRIGGER"), "auto").trim().toLowerCase();
 		boolean runOnSync = isTrue(defaultIfBlank(System.getenv("AI_REVIEW_ON_SYNC"), "true"));
@@ -2148,14 +2164,24 @@ public class GitHub_Informer_New {
 			return new AiReviewDecision(false, "AI Review Gate failed", "Static security check found blocking issues (independent of AI verdict).", staticFindings);
 
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, sanitizedDiff, isIncremental);
-		// resolvedProvider is always the mandatory, gate-checked ai_review.service value from the
-		// YAML config file by the time we reach this point (see the fail-fast service gate earlier
-		// in the flow) - one of exactly "openai", "claude", "gemini". No guessing/defaulting here:
-		// if this is ever somehow blank, fail loudly rather than silently defaulting to a provider.
+		// resolvedProvider is the EFFECTIVE service by the time we reach this point: the mandatory,
+		// gate-checked declared service (ai_review.service in the YAML config file, or the
+		// ai-review-service input) UNLESS the ai-review-token's prefix confidently identifies a
+		// different known provider, in which case the caller (handleAiReviewGate) already
+		// overrode it to the token's provider so URL/payload-shaping/model all stay consistent
+		// with each other. Either way this is one of exactly "openai", "claude", "gemini" - no
+		// guessing/defaulting here: if this is ever somehow blank, fail loudly rather than
+		// silently defaulting to a provider.
 		String provider = normalizeAiService(resolvedProvider);
 		if(provider.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "No valid AI service (openai, claude, or gemini) was resolved before invoking the AI provider.");
-		String model = resolveModelForProvider(provider, resolvedModel);
+		// IMPORTANT: resolvedModel here is ALREADY fully resolved by the caller (handleAiReviewGate)
+		// against the user's DECLARED service, not this token-driven "provider" - do not re-run it
+		// through resolveModelForProvider(provider, ...) here, since that would silently swap in a
+		// different provider's default model (or re-validate against the wrong provider) whenever
+        // the token overrides routing. The model the user configured/was given must stay exactly
+        // as resolved upstream regardless of which provider ends up handling the HTTP call.
+		String model = resolvedModel;
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
 		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. "
 			+ "DIFF FORMAT RULES (critical, read carefully): The diff uses unified diff format with all REMOVED ('-') lines already stripped out before reaching you \u2014 every line you see is either a file/hunk header (\"diff --git\", \"index\", \"--- a/...\", \"+++ b/...\", \"@@ ... @@\", mode/rename metadata), a line starting with '+' that was ADDED and represents the CURRENT/NEW state of the code, or an unchanged context line. There are no removed lines present in this diff at all, so you must NEVER assume, infer, or hallucinate the existence or content of code that is not literally shown to you. Evaluate the code quality, security, and correctness of ONLY the '+' lines and unchanged context lines that are actually present. If the diff for a file contains no '+' lines (for example only header/hunk lines remain because the only changes in that file were deletions), that means the net effect was a removal with no new code introduced \u2014 do not fabricate an issue for it. Before citing any FILE/LINE/ISSUE, double-check that the exact offending code you are citing is literally present as a '+' or unchanged context line in the diff shown to you. "
@@ -2627,11 +2653,13 @@ public class GitHub_Informer_New {
 		return "";
 	}
 
-	// Pure fingerprint guess from the token's shape/prefix only - no URL involved - used
-	// exclusively to detect a confident mismatch against the user-declared service in the
-	// configured AI review config file. Returns "" when the token's format doesn't confidently
-	// match a known provider (e.g. a custom/enterprise/self-hosted key), so callers can treat
-	// that as "unknown, trust the declared service" rather than a false-positive mismatch.
+	// Pure fingerprint guess from the token's shape/prefix only - no URL involved. This is now
+	// the AUTHORITATIVE provider signal whenever it returns a confident result: the caller
+	// (handleAiReviewGate) overrides the declared service with this guess so that URL, payload
+	// shaping, and model default/validation all switch together and can never disagree with each
+	// other. Returns "" when the token's format doesn't confidently match a known provider (e.g.
+	// a custom/enterprise/self-hosted key), so callers fall back to trusting the declared service
+	// in that case instead of guessing wrong.
 	public static String guessProviderFromToken(String token)
 	{
 		String normalizedToken = defaultIfBlank(token, "").trim();
@@ -2642,20 +2670,6 @@ public class GitHub_Informer_New {
 		if(normalizedToken.startsWith("sk-"))
 			return "openai";
 		return "";
-	}
-
-	// Returns null when there is no confident conflict; otherwise a human-readable reason.
-	// Lenient by design: an unrecognized token format never triggers a mismatch, only a
-	// CONFIDENT guess for a DIFFERENT known provider than the one declared does.
-	public static String checkAiServiceTokenMismatch(String declaredService, String token, String configFileName)
-	{
-		String declared = normalizeAiService(declaredService);
-		String guessed = guessProviderFromToken(token);
-		if(declared.isBlank() || guessed.isBlank())
-			return null;
-		if(declared.equals(guessed))
-			return null;
-		return defaultIfBlank(configFileName, "the AI review config file") + " declares `service: " + declared + "` but the provided AI token looks like a " + describeProviderForMessage(guessed) + " key.";
 	}
 
 	public static String describeProviderForMessage(String provider)
