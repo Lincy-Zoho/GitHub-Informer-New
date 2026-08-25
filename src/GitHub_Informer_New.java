@@ -2191,7 +2191,9 @@ public class GitHub_Informer_New {
 		{
 			HttpResult aiResponse = invokeAiProvider(provider, apiUrl, aiToken, model, systemPrompt, userPrompt);
 			if(aiResponse.status < 200 || aiResponse.status > 299)
-				return new AiReviewDecision(false, "AI Review Gate failed", provider + " request failed with status " + aiResponse.status + ".");
+				return new AiReviewDecision(false, "failure", "AI Review Gate failed",
+					provider + " request failed with status " + aiResponse.status + ". Response: "
+						+ trimTo(defaultIfBlank(aiResponse.body, "(no response body)"), 1500));
 
 			String content = extractAiContent(aiResponse.body, provider);
 			if(content == null || content.isBlank())
