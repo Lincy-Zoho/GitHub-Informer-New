@@ -1889,17 +1889,25 @@ public class GitHub_Informer_New {
 			return;
 		}
 
-		// Req: service must be declared in the config file once the ai_review block exists.
-		// Without a declared service we cannot safely pick a provider/model, so fail fast rather
-		// than silently guessing from the token (which is now only used for mismatch detection).
+		// Req: service is always user-declared in the ai-review-config-file YAML, never guessed
+		// and never defaulted. This covers both cases with one check: the block exists but
+		// `service` is missing/invalid inside it, AND no config file/ai_review block was ever
+		// provided at all (e.g. ai-review-enabled was set to true via a plain workflow input with
+		// no config file). Without a declared service we cannot safely pick a provider, model, or
+		// API URL, so fail fast rather than silently guessing from the token (which is now only
+		// ever used for mismatch detection, not provider selection) or defaulting to OpenAI.
 		String declaredService = normalizeAiService(yamlConfig.service);
-		if(yamlConfig.blockFound && declaredService.isBlank())
+		if(declaredService.isBlank())
 		{
 			String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-			String missingServiceSummary = "AI review is enabled but no service was declared in " + configFileLabel;
-			String missingServiceDetails = "The `ai_review` block in " + configFileLabel + " is missing a valid `service` value.\n\n"
-				+ "Set `service` to one of `openai`, `claude`, or `gemini` under `ai_review:` in " + configFileLabel + " and rerun.";
-			debug("AI Review Gate: failing fast, ai_review.service missing/invalid in " + configFileLabel + ".");
+			String missingServiceSummary = yamlConfig.blockFound
+				? "AI review is enabled but no service was declared in " + configFileLabel
+				: "AI review is enabled but no ai-review-config-file was declared";
+			String missingServiceDetails = yamlConfig.blockFound
+				? "The `ai_review` block in " + configFileLabel + " is missing a valid `service` value.\n\n"
+					+ "Set `service` to one of `openai`, `claude`, or `gemini` under `ai_review:` in " + configFileLabel + " and rerun."
+				: "Set `ai-review-config-file` to point at a YAML file containing an `ai_review:` block with `service: openai|claude|gemini` (and optionally `model:`), then rerun.";
+			debug("AI Review Gate: failing fast, ai_review.service missing/invalid or no config file declared (" + configFileLabel + ").");
 			if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 				setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", missingServiceSummary, missingServiceDetails);
 			if(githubToken != null && !githubToken.isBlank())
@@ -1928,9 +1936,30 @@ public class GitHub_Informer_New {
 				return;
 			}
 		}
-		String effectiveService = !declaredService.isBlank() ? declaredService : "openai";
+		String effectiveService = declaredService;
 
-		String resolvedModel = resolveModelForProvider(effectiveService, defaultIfBlank(yamlConfig.model, defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), "")));
+		// Req: if the user provided a model in the config file, verify it before using it;
+		// otherwise fall back to the latest model for the declared service. AI_REVIEW_MODEL env
+		// var is retained only as a secondary source for callers who prefer setting it via a
+		// plain workflow input rather than the config file - the config file value always wins.
+		String userConfiguredModel = defaultIfBlank(yamlConfig.model, defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), ""));
+		if(!userConfiguredModel.isBlank())
+		{
+			String modelValidationError = validateModelForProvider(effectiveService, userConfiguredModel);
+			if(modelValidationError != null)
+			{
+				String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
+				String invalidModelSummary = "Configured AI model does not match the declared service";
+				String invalidModelDetails = modelValidationError + "\n\nEither fix the `model` value in " + configFileLabel + " or remove it to automatically use the latest model for `service: " + effectiveService + "`.";
+				debug("AI Review Gate: failing fast, " + modelValidationError);
+				if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+					setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", invalidModelSummary, invalidModelDetails);
+				if(githubToken != null && !githubToken.isBlank())
+					postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, invalidModelSummary, invalidModelDetails));
+				return;
+			}
+		}
+		String resolvedModel = resolveModelForProvider(effectiveService, userConfiguredModel);
 
 		String triggerMode = defaultIfBlank(System.getenv("AI_REVIEW_TRIGGER"), "auto").trim().toLowerCase();
 		boolean runOnSync = isTrue(defaultIfBlank(System.getenv("AI_REVIEW_ON_SYNC"), "true"));
@@ -2119,9 +2148,13 @@ public class GitHub_Informer_New {
 			return new AiReviewDecision(false, "AI Review Gate failed", "Static security check found blocking issues (independent of AI verdict).", staticFindings);
 
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, sanitizedDiff, isIncremental);
-		String provider = normalizeAiService(defaultIfBlank(resolvedProvider, detectAiProvider(aiToken, apiUrlFromEnv)));
+		// resolvedProvider is always the mandatory, gate-checked ai_review.service value from the
+		// YAML config file by the time we reach this point (see the fail-fast service gate earlier
+		// in the flow) - one of exactly "openai", "claude", "gemini". No guessing/defaulting here:
+		// if this is ever somehow blank, fail loudly rather than silently defaulting to a provider.
+		String provider = normalizeAiService(resolvedProvider);
 		if(provider.isBlank())
-			provider = detectAiProvider(aiToken, apiUrlFromEnv);
+			return new AiReviewDecision(false, "AI Review Gate failed", "No valid AI service (openai, claude, or gemini) was resolved before invoking the AI provider.");
 		String model = resolveModelForProvider(provider, resolvedModel);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
 		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. "
@@ -2636,37 +2669,39 @@ public class GitHub_Informer_New {
 		return provider;
 	}
 
-	public static String detectAiProvider(String token, String apiUrl)
-	{
-		String url = defaultIfBlank(apiUrl, "").toLowerCase();
-		if(url.contains("anthropic"))
-			return "claude";
-		if(url.contains("generativelanguage.googleapis.com") || url.contains("gemini"))
-			return "gemini";
-		if(url.contains("openai"))
-			return "openai";
-
-		String normalizedToken = defaultIfBlank(token, "").trim();
-		if(normalizedToken.startsWith("sk-ant-"))
-			return "claude";
-		if(normalizedToken.startsWith("AIza"))
-			return "gemini";
-		if(normalizedToken.startsWith("sk-"))
-			return "openai";
-
-		// Default to OpenAI-compatible for unknown token patterns.
-		return "openai";
-	}
-
+	// Kept in sync with the "recommended" entries documented in action.yml's ai-review-model
+	// description. These are the models used ONLY when the user does not declare a model in
+	// the ai-review-config-file YAML - i.e. the "use the latest model of the configured service"
+	// fallback. Update both places together when a vendor deprecates/replaces a recommended model.
 	public static String resolveModelForProvider(String provider, String configuredModel)
 	{
 		if(configuredModel != null && !configuredModel.isBlank())
 			return configuredModel;
 		if("claude".equals(provider))
-			return "claude-3-5-sonnet-latest";
+			return "claude-sonnet-4-5-20250929";
 		if("gemini".equals(provider))
-			return "gemini-1.5-pro";
+			return "gemini-2.5-flash";
 		return "gpt-4.1-mini";
+	}
+
+	// Lightweight allow-list validation for a user-declared model, so a typo'd or deprecated
+	// model name in the ai-review-config-file YAML fails fast with a clear, actionable error
+	// instead of a confusing 404/400 from the provider's API. Intentionally permissive: only
+	// rejects a model when the provider is confidently known AND the model clearly does not
+	// belong to that provider's naming family, so legitimate new/未-listed model names (vendors
+	// ship new ones between updates to this list) are never blocked outright.
+	public static String validateModelForProvider(String provider, String configuredModel)
+	{
+		if(configuredModel == null || configuredModel.isBlank())
+			return null;
+		String model = configuredModel.trim().toLowerCase();
+		if("claude".equals(provider) && !model.startsWith("claude"))
+			return "Configured model `" + configuredModel + "` does not look like a Claude model (expected a name starting with `claude`, e.g. `claude-sonnet-4-5-20250929`).";
+		if("gemini".equals(provider) && !model.startsWith("gemini"))
+			return "Configured model `" + configuredModel + "` does not look like a Gemini model (expected a name starting with `gemini`, e.g. `gemini-2.5-flash`).";
+		if("openai".equals(provider) && !(model.startsWith("gpt") || model.startsWith("o1") || model.startsWith("o3") || model.startsWith("o4")))
+			return "Configured model `" + configuredModel + "` does not look like an OpenAI model (expected a name starting with `gpt`/`o1`/`o3`/`o4`, e.g. `gpt-4.1-mini`).";
+		return null;
 	}
 
 	public static String resolveApiUrlForProvider(String provider, String configuredApiUrl)
