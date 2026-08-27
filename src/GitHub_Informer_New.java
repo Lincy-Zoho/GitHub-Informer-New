@@ -2743,16 +2743,70 @@ public class GitHub_Informer_New {
 
 	public static HttpResult invokeOpenAiCompatible(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
-		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"temperature\":0.1,\"messages\":[{\"role\":\"system\",\"content\":\"" + jsonEscape(systemPrompt) + "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		boolean includeTemperature = !modelRejectsTemperature(model);
+		HttpResult result = invokeOpenAiCompatibleInternal(apiUrl, token, model, systemPrompt, userPrompt, includeTemperature);
+		if(includeTemperature && isTemperatureDeprecatedError(result))
+			result = invokeOpenAiCompatibleInternal(apiUrl, token, model, systemPrompt, userPrompt, false);
+		return result;
+	}
+
+	public static HttpResult invokeOpenAiCompatibleInternal(String apiUrl, String token, String model, String systemPrompt, String userPrompt, boolean includeTemperature) throws IOException
+	{
+		String temperaturePart = includeTemperature ? "\"temperature\":0.1," : "";
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\"," + temperaturePart + "\"messages\":[{\"role\":\"system\",\"content\":\"" + jsonEscape(systemPrompt) + "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		headers.put("Authorization", "Bearer " + token);
 		return sendHttpRequest("POST", apiUrl, payload, headers);
 	}
 
+	// Several providers have begun deprecating/rejecting the "temperature" sampling parameter on
+	// newer reasoning-oriented models (Anthropic's opus-5 family, OpenAI's o1/o3/o4 reasoning
+	// models, and this is spreading to newer Gemini releases too), returning a 400
+	// invalid_request_error instead of just ignoring the field. There is no published,
+	// future-proof list of which models reject it, so this is handled two ways together for all
+	// three providers (Claude, OpenAI-compatible, Gemini):
+	//   1) a best-effort model-name check skips sending it up front for known-affected families,
+	//      avoiding the wasted round trip in the common case, and
+	//   2) if the provider still rejects the request specifically because of "temperature", we
+	//      retry once automatically without it - so the gate self-heals against future model
+	//      deprecations without needing a code change every time a new model drops support.
+	// Older/standard models across all providers (Haiku, Sonnet, GPT-4.x, Gemini 1.x/2.x-flash,
+	// etc.) are unaffected: modelRejectsTemperature returns false for them, so temperature is
+	// still sent exactly as before - no behavior change, no extra round trip.
+	public static boolean modelRejectsTemperature(String model)
+	{
+		String normalized = defaultIfBlank(model, "").trim().toLowerCase();
+		if(normalized.contains("opus-5") || normalized.contains("opus5"))
+			return true;
+		// OpenAI's reasoning models (o1, o3, o4, and any future "o<digit>" family) fix their own
+		// sampling and reject a caller-supplied temperature outright.
+		if(normalized.matches("^o[0-9].*"))
+			return true;
+		return false;
+	}
+
+	public static boolean isTemperatureDeprecatedError(HttpResult result)
+	{
+		if(result == null || result.body == null)
+			return false;
+		String body = result.body.toLowerCase();
+		return body.contains("temperature") && (body.contains("deprecated") || body.contains("unsupported") || body.contains("not supported") || body.contains("does not support"));
+	}
+
 	public static HttpResult invokeClaude(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
-		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":1200,\"temperature\":0.1,\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		boolean includeTemperature = !modelRejectsTemperature(model);
+		HttpResult result = invokeClaudeInternal(apiUrl, token, model, systemPrompt, userPrompt, includeTemperature);
+		if(includeTemperature && isTemperatureDeprecatedError(result))
+			result = invokeClaudeInternal(apiUrl, token, model, systemPrompt, userPrompt, false);
+		return result;
+	}
+
+	public static HttpResult invokeClaudeInternal(String apiUrl, String token, String model, String systemPrompt, String userPrompt, boolean includeTemperature) throws IOException
+	{
+		String temperaturePart = includeTemperature ? "\"temperature\":0.1," : "";
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":1200," + temperaturePart + "\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		headers.put("x-api-key", token);
@@ -2761,6 +2815,15 @@ public class GitHub_Informer_New {
 	}
 
 	public static HttpResult invokeGemini(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
+	{
+		boolean includeTemperature = !modelRejectsTemperature(model);
+		HttpResult result = invokeGeminiInternal(apiUrl, token, model, systemPrompt, userPrompt, includeTemperature);
+		if(includeTemperature && isTemperatureDeprecatedError(result))
+			result = invokeGeminiInternal(apiUrl, token, model, systemPrompt, userPrompt, false);
+		return result;
+	}
+
+	public static HttpResult invokeGeminiInternal(String apiUrl, String token, String model, String systemPrompt, String userPrompt, boolean includeTemperature) throws IOException
 	{
 		String endpoint = apiUrl;
 		if(!endpoint.contains("generateContent"))
@@ -2774,7 +2837,8 @@ public class GitHub_Informer_New {
 		else
 			endpoint = endpoint + "?key=" + URLEncoder.encode(token, UTF_8);
 
-		String payload = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jsonEscape(systemPrompt) + "\"}]},\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(userPrompt) + "\"}]}],\"generationConfig\":{\"temperature\":0.1}}";
+		String generationConfig = includeTemperature ? "{\"temperature\":0.1}" : "{}";
+		String payload = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jsonEscape(systemPrompt) + "\"}]},\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(userPrompt) + "\"}]}],\"generationConfig\":" + generationConfig + "}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		return sendHttpRequest("POST", endpoint, payload, headers);
