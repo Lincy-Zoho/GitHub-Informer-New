@@ -1920,32 +1920,21 @@ public class GitHub_Informer_New {
 			return;
 		}
 
-		// Req 3 (REVISED): the AI provider token is the AUTHORITATIVE source of truth for ROUTING
-		// ONLY (URL + request/response payload shaping) whenever its prefix confidently identifies
-		// a known provider (sk-ant- -> claude, AIza -> gemini, sk- -> openai). This overrides the
-		// declared service (config file or ai-review-service input) for routing purposes for the
-		// rest of this run. It deliberately does NOT touch model default/validation - see the model
-		// resolution block below, which always keys off declaredService (explicit-model case) so a
-		// user's chosen model can never be silently rejected/swapped just because their token's
-		// format doesn't match their declared service. The declared service remains the fallback
-		// used for routing only when the token's format is unrecognized (custom/self-hosted/
-		// enterprise keys), and is still required up front (see the fail-fast gate above) both for
-		// that fallback case and as the permanent source of truth for the model.
-		String tokenGuessedService = guessProviderFromToken(aiToken);
+		// Req 3 (REVISED AGAIN): provider identity is now ALWAYS taken strictly from the DECLARED
+		// service (ai_review.service in the config file, or the ai-review-service input) for BOTH
+		// routing (URL + request/response payload shaping) AND the model. Token-shape sniffing
+		// (e.g. "AIza..." -> gemini, "sk-ant-..." -> claude) has been removed entirely: Google is
+		// transitioning Gemini/AI Studio keys away from the old "AIza" API-key format to newer
+		// "auth key" formats, so prefix-based guessing is no longer a reliable (or future-proof)
+        // way to identify a provider from its token shape, and would otherwise silently
+		// misclassify - or fail to classify - a perfectly valid Gemini key. There is deliberately
+		// no fallback guess-from-token path anymore: if the wrong service is declared for a given
+		// token, the provider's API will reject the request (typically 401/403) and that failure
+		// is surfaced as-is, which is clearer than a silent misroute based on a guessed prefix.
 		String effectiveService = declaredService;
-		if(!tokenGuessedService.isBlank() && !tokenGuessedService.equals(declaredService))
-		{
-			debug("AI Review Gate: ai-review-token looks like a " + describeProviderForMessage(tokenGuessedService) + " key; overriding declared service `" + declaredService + "` (from " + configFileLabel + ") with `" + tokenGuessedService + "` for this run. Update the declared service to match your token to remove this notice.");
-			effectiveService = tokenGuessedService;
-		}
 
-		// Req (REVISED): model choice stays tied to the user's DECLARED service (config file /
-		// ai-review-service input), never to the token-overridden effectiveService above. Routing
-		// (URL + request/response payload shaping) is allowed to switch dynamically based on the
-		// token's format, but the model is something the user explicitly picked for the provider
-		// they intended - silently re-validating/re-defaulting it against whatever the token
-		// happened to guess would fight the user's own YAML config and could reject a perfectly
-        // valid model (or swap in the wrong provider's default) for no reason they specified.
+		// Model choice is tied to the same DECLARED service used for routing above - there is only
+		// one provider identity now, so there is no more risk of model and routing disagreeing.
 		// AI_REVIEW_MODEL env var is retained only as a secondary source for callers who prefer
 		// setting it via a plain workflow input rather than the config file - the config file
 		// value always wins.
@@ -1966,16 +1955,36 @@ public class GitHub_Informer_New {
 				return;
 			}
 		}
-		// When the user gave NO explicit model, there is no user intent to protect, so the default
-		// picked here must belong to whichever provider actually ends up handling the HTTP call
-		// (effectiveService, which may have been token-overridden above) - otherwise a plain
-		// "declaredService"-flavoured default model name (e.g. a claude-* model) would get sent to
-		// a different vendor's endpoint (e.g. OpenAI's) and fail outright. When the user DID give
-		// an explicit model, it was already validated against declaredService above and must be
-		// passed through completely unchanged here.
-		String resolvedModel = userConfiguredModel.isBlank()
-			? resolveModelForProvider(effectiveService, "")
-			: resolveModelForProvider(declaredService, userConfiguredModel);
+		// effectiveService === declaredService now (no more token-based override), so the default
+		// model picked here always belongs to the same provider that will actually handle the HTTP
+		// call. When the user DID give an explicit model, it was already validated against
+		// declaredService above and is passed through completely unchanged here.
+		String resolvedModel = resolveModelForProvider(declaredService, userConfiguredModel);
+
+		// Pre-flight credential probe: makes one minimal, cheap call to the DECLARED provider's
+		// API before spending a diff-fetch + full-review cycle on a token that will just be
+		// rejected downstream anyway. This intentionally does NOT try to validate the token by
+		// shape/prefix (see the removed guessProviderFromToken note above for why that is no
+		// longer reliable, e.g. Gemini's AIza -> auth-key transition) - instead it asks the real
+		// provider API whether aiToken is actually valid FOR declaredService, which is the only
+		// future-proof way to catch a token/service mismatch early. A failure here fails fast with
+        // a clear, specific PR comment/check-run instead of a vague error surfacing much later out
+        // of the full review call.
+		String preflightError = preflightVerifyAiCredentials(declaredService, resolveApiUrlForProvider(declaredService, System.getenv("AI_REVIEW_API_URL")), aiToken, resolvedModel);
+		if(preflightError != null)
+		{
+			String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
+			String badTokenSummary = "AI review token was rejected by " + declaredService;
+			String badTokenDetails = "A pre-flight check against " + declaredService + " failed before running the full review.\n\n"
+				+ preflightError + "\n\n"
+				+ "Verify that `ai-review-token` is a valid, active key that actually belongs to `ai-review-service: " + declaredService + "`, and that it has access to model `" + resolvedModel + "`.";
+			debug("AI Review Gate: failing fast, pre-flight credential check failed for declaredService=" + declaredService + ": " + preflightError);
+			if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+				setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", badTokenSummary, badTokenDetails);
+			if(githubToken != null && !githubToken.isBlank())
+				postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, badTokenSummary, badTokenDetails));
+			return;
+		}
 
 		String triggerMode = defaultIfBlank(System.getenv("AI_REVIEW_TRIGGER"), "auto").trim().toLowerCase();
 		boolean runOnSync = isTrue(defaultIfBlank(System.getenv("AI_REVIEW_ON_SYNC"), "true"));
@@ -2656,35 +2665,14 @@ public class GitHub_Informer_New {
 		return "";
 	}
 
-	// Pure fingerprint guess from the token's shape/prefix only - no URL involved. This is now
-	// the AUTHORITATIVE provider signal whenever it returns a confident result: the caller
-	// (handleAiReviewGate) overrides the declared service with this guess so that URL, payload
-	// shaping, and model default/validation all switch together and can never disagree with each
-	// other. Returns "" when the token's format doesn't confidently match a known provider (e.g.
-	// a custom/enterprise/self-hosted key), so callers fall back to trusting the declared service
-	// in that case instead of guessing wrong.
-	public static String guessProviderFromToken(String token)
-	{
-		String normalizedToken = defaultIfBlank(token, "").trim();
-		if(normalizedToken.startsWith("sk-ant-"))
-			return "claude";
-		if(normalizedToken.startsWith("AIza"))
-			return "gemini";
-		if(normalizedToken.startsWith("sk-"))
-			return "openai";
-		return "";
-	}
-
-	public static String describeProviderForMessage(String provider)
-	{
-		if("claude".equals(provider))
-			return "Claude/Anthropic";
-		if("gemini".equals(provider))
-			return "Gemini/Google";
-		if("openai".equals(provider))
-			return "OpenAI";
-		return provider;
-	}
+	// NOTE: token-prefix provider sniffing (formerly guessProviderFromToken/
+	// describeProviderForMessage, e.g. "sk-ant-" -> claude, "AIza" -> gemini, "sk-" -> openai) has
+	// been intentionally removed. Google is transitioning Gemini/AI Studio keys away from the old
+	// "AIza..." API-key format toward newer "auth key" formats, so prefix matching is no longer a
+	// reliable way to identify a provider from its token shape and would silently misclassify (or
+	// fail to classify) valid keys going forward. Provider identity is now taken strictly from the
+	// DECLARED service (ai_review.service in the config file, or the ai-review-service input) -
+	// see handleAiReviewGate's declaredService/effectiveService handling above.
 
 	// Kept in sync with the "recommended" entries documented in action.yml's ai-review-model
 	// description. These are the models used ONLY when the user does not declare a model in
@@ -2739,6 +2727,49 @@ public class GitHub_Informer_New {
 		if("gemini".equals(provider))
 			return invokeGemini(apiUrl, token, model, systemPrompt, userPrompt);
 		return invokeOpenAiCompatible(apiUrl, token, model, systemPrompt, userPrompt);
+	}
+
+	// Minimal, cheap real-call probe against the DECLARED provider's API, used only to verify
+	// that aiToken actually belongs to declaredService BEFORE spending a full diff-fetch + review
+	// cycle on it. Deliberately reuses the exact same invoke*/payload path as the real review call
+	// (not a hand-rolled "does this look like a key" check) so the only thing being tested is
+	// "does the real provider accept this token for this model", which is the one thing that
+    // actually matters and the only way to stay correct as providers change their key formats
+    // (see the removed guessProviderFromToken note above). Kept intentionally tiny: max_tokens/
+    // maxOutputTokens style limits are not set here since prompt is a single short word, so cost
+    // and latency are negligible compared to the real review call that follows.
+	// Returns null when the token was accepted, or a short human-readable reason when it was not.
+	public static String preflightVerifyAiCredentials(String provider, String apiUrl, String token, String model)
+	{
+		try
+		{
+			HttpResult probe = invokeAiProvider(provider, apiUrl, token, model, "Respond with exactly: OK", "OK");
+			if(probe.status >= 200 && probe.status <= 299)
+				return null;
+
+			// Only 401/403 (and Gemini's frequent 400 API_KEY_INVALID) are treated as a definitive
+			// credential/service mismatch worth failing fast on. Other statuses (429 rate limit,
+			// 5xx, transient network hiccups) are NOT reliable signals that the token is wrong for
+			// this provider, so they are deliberately let through here - the real review call
+			// below will surface those on its own if they persist, without falsely blaming the
+			// token for a problem that is actually transient or provider-side.
+			String body = defaultIfBlank(probe.body, "");
+			boolean looksLikeAuthFailure = probe.status == 401 || probe.status == 403
+				|| (probe.status == 400 && body.toUpperCase().contains("API_KEY_INVALID"));
+			if(!looksLikeAuthFailure)
+			{
+				debug("AI credential preflight: non-auth status " + probe.status + " from " + provider + ", not treated as a token/service mismatch. Proceeding.");
+				return null;
+			}
+			return provider + " rejected the token with status " + probe.status + ". Response: " + trimTo(body.isBlank() ? "(no response body)" : body, 500);
+		}
+		catch(Exception e)
+		{
+			// Network/IO failure during the probe itself is not evidence of a bad token - do not
+			// fail the gate here, let the real review call attempt it and surface its own error.
+			debug("AI credential preflight: probe call threw " + e.getMessage() + ", skipping preflight verdict and proceeding.");
+			return null;
+		}
 	}
 
 	public static HttpResult invokeOpenAiCompatible(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
