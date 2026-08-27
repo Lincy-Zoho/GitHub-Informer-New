@@ -1970,15 +1970,20 @@ public class GitHub_Informer_New {
 		// future-proof way to catch a token/service mismatch early. A failure here fails fast with
         // a clear, specific PR comment/check-run instead of a vague error surfacing much later out
         // of the full review call.
-		String preflightError = preflightVerifyAiCredentials(declaredService, resolveApiUrlForProvider(declaredService, System.getenv("AI_REVIEW_API_URL")), aiToken, resolvedModel);
-		if(preflightError != null)
+		PreflightResult preflightResult = preflightVerifyAiCredentials(declaredService, resolveApiUrlForProvider(declaredService, System.getenv("AI_REVIEW_API_URL")), aiToken, resolvedModel);
+		if(preflightResult.errorMessage != null)
 		{
 			String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-			String badTokenSummary = "AI review token was rejected by " + declaredService;
+			boolean modelProblem = preflightResult.modelNotFound;
+			String badTokenSummary = modelProblem
+				? "Model `" + resolvedModel + "` is not supported by " + declaredService
+				: "AI review token was rejected by " + declaredService;
 			String badTokenDetails = "A pre-flight check against " + declaredService + " failed before running the full review.\n\n"
-				+ preflightError + "\n\n"
-				+ "Verify that `ai-review-token` is a valid, active key that actually belongs to `ai-review-service: " + declaredService + "`, and that it has access to model `" + resolvedModel + "`.";
-			debug("AI Review Gate: failing fast, pre-flight credential check failed for declaredService=" + declaredService + ": " + preflightError);
+				+ preflightResult.errorMessage + "\n\n"
+				+ (modelProblem
+					? "Update `ai-review-model` to a model name that is currently supported by `ai-review-service: " + declaredService + "`, then re-run the review."
+					: "Verify that `ai-review-token` is a valid, active key that actually belongs to `ai-review-service: " + declaredService + "`, and that it has access to model `" + resolvedModel + "`.");
+			debug("AI Review Gate: failing fast, pre-flight check failed for declaredService=" + declaredService + ": " + preflightResult.errorMessage);
 			if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 				setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", badTokenSummary, badTokenDetails);
 			if(githubToken != null && !githubToken.isBlank())
@@ -2738,14 +2743,70 @@ public class GitHub_Informer_New {
     // (see the removed guessProviderFromToken note above). Kept intentionally tiny: max_tokens/
     // maxOutputTokens style limits are not set here since prompt is a single short word, so cost
     // and latency are negligible compared to the real review call that follows.
-	// Returns null when the token was accepted, or a short human-readable reason when it was not.
-	public static String preflightVerifyAiCredentials(String provider, String apiUrl, String token, String model)
+	// Returns null when the token and model were both accepted, or a short human-readable reason
+	// when either was rejected. Only ever probes the SINGLE model the user configured - no
+	// fallback/auto-switch to a different model. If that exact model is not supported by the
+	// provider, the gate fails fast with a clear PR comment telling the user to change
+	// `ai-review-model` and re-run, rather than silently reviewing with a different model than
+	// what they asked for.
+	// True when the probe response indicates the MODEL was not found/recognized by the provider,
+	// as opposed to the TOKEN being rejected. Anthropic: {"error":{"type":"not_found_error",...}}
+	// on a 404. OpenAI: {"error":{"code":"model_not_found",...}} typically on a 404. Gemini:
+	// {"error":{"code":404,"status":"NOT_FOUND",...}} when the model has been retired/renamed.
+	public static boolean looksLikeModelNotFound(String provider, int status, String body)
 	{
+		String upperBody = defaultIfBlank(body, "").toUpperCase();
+		if("claude".equals(provider))
+			return status == 404 || upperBody.contains("NOT_FOUND_ERROR") || upperBody.contains("\"MODEL:");
+		if("openai".equals(provider))
+			return status == 404 || upperBody.contains("MODEL_NOT_FOUND");
+		if("gemini".equals(provider))
+			// Google's retired/unknown-model response looks like:
+			// {"error":{"code":404,"message":"models/gemini-1.5-pro is not found for API version
+			// v1beta, or is not supported for generateContent...","status":"NOT_FOUND"}}
+			return status == 404 || upperBody.contains("\"STATUS\":\"NOT_FOUND\"") || upperBody.contains("NOT_FOUND");
+		return false;
+	}
+
+	// Result of the preflight credential/model probe against the SINGLE model the user configured.
+	// `errorMessage` is null when that exact model+token combination was accepted. `modelNotFound`
+	// distinguishes "the model name isn't supported" from "the token/key was rejected", so the
+	// caller can post a precise, actionable PR comment telling the user exactly what to fix.
+	public static class PreflightResult
+	{
+		public String errorMessage;
+		public boolean modelNotFound;
+
+		public PreflightResult(String errorMessage, boolean modelNotFound)
+		{
+			this.errorMessage = errorMessage;
+			this.modelNotFound = modelNotFound;
+		}
+	}
+
+	public static PreflightResult preflightVerifyAiCredentials(String provider, String apiUrl, String token, String model)
+	{
+		// Some users paste a "Bearer <token>" value into the token field by habit (copied from a
+		// curl example, etc.). Strip it defensively here so the preflight tests the actual key,
+		// not a value that will always be rejected regardless of whether the key itself is valid.
+		String cleanedToken = defaultIfBlank(token, "").trim();
+		if(cleanedToken.toLowerCase().startsWith("bearer "))
+			cleanedToken = cleanedToken.substring(7).trim();
+
 		try
 		{
-			HttpResult probe = invokeAiProvider(provider, apiUrl, token, model, "Respond with exactly: OK", "OK");
+			HttpResult probe = invokeAiProvider(provider, apiUrl, cleanedToken, model, "Respond with exactly: OK", "OK");
 			if(probe.status >= 200 && probe.status <= 299)
-				return null;
+				return new PreflightResult(null, false);
+
+			String body = defaultIfBlank(probe.body, "");
+
+			if(looksLikeModelNotFound(provider, probe.status, body))
+			{
+				debug("AI credential preflight: model '" + model + "' not found/unsupported for " + provider + ", failing fast.");
+				return new PreflightResult(provider + " reported model `" + model + "` as not found or not supported. Response: "
+					+ trimTo(body.isBlank() ? "(no response body)" : body, 500), true);
+			}
 
 			// Only 401/403 (and Gemini's frequent 400 API_KEY_INVALID) are treated as a definitive
 			// credential/service mismatch worth failing fast on. Other statuses (429 rate limit,
@@ -2753,22 +2814,23 @@ public class GitHub_Informer_New {
 			// this provider, so they are deliberately let through here - the real review call
 			// below will surface those on its own if they persist, without falsely blaming the
 			// token for a problem that is actually transient or provider-side.
-			String body = defaultIfBlank(probe.body, "");
 			boolean looksLikeAuthFailure = probe.status == 401 || probe.status == 403
 				|| (probe.status == 400 && body.toUpperCase().contains("API_KEY_INVALID"));
 			if(!looksLikeAuthFailure)
 			{
 				debug("AI credential preflight: non-auth status " + probe.status + " from " + provider + ", not treated as a token/service mismatch. Proceeding.");
-				return null;
+				return new PreflightResult(null, false);
 			}
-			return provider + " rejected the token with status " + probe.status + ". Response: " + trimTo(body.isBlank() ? "(no response body)" : body, 500);
+
+			return new PreflightResult(provider + " rejected the token with status " + probe.status + " while probing model `" + model + "`. Response: "
+				+ trimTo(body.isBlank() ? "(no response body)" : body, 500), false);
 		}
 		catch(Exception e)
 		{
-			// Network/IO failure during the probe itself is not evidence of a bad token - do not
-			// fail the gate here, let the real review call attempt it and surface its own error.
-			debug("AI credential preflight: probe call threw " + e.getMessage() + ", skipping preflight verdict and proceeding.");
-			return null;
+			// Network/IO failure during the probe itself is not evidence of a bad token/model - do
+			// not fail the gate here, let the real review call attempt it and surface its own error.
+			debug("AI credential preflight: probe call threw " + e.getMessage() + " for model '" + model + "', skipping preflight verdict and proceeding.");
+			return new PreflightResult(null, false);
 		}
 	}
 
