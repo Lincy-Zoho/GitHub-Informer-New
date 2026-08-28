@@ -2034,20 +2034,26 @@ public class GitHub_Informer_New {
 			System.err.println("AI review check run skipped: missing github token or PR head sha.");
 		}
 
+		// Always upsert the PR comment - pass or fail - so it stays a live, current report of the
+		// latest changed files, findings, file names, and line numbers. Previously this only ran on
+		// failure, which meant a PASSING re-review after a fix left the old "AI Review Failed"
+		// comment stale and misleading (or left the PR with no comment at all on the first pass).
+		String reviewMessage = decision.passed
+			? buildAiSuccessMessage(prNumber, pullRequestUrl, decision.summary, decision.details)
+			: buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
+		boolean prCommentPosted = false;
+		if(githubToken != null && !githubToken.isBlank())
+		{
+			postPullRequestComment(repository, prNumber, githubToken, reviewMessage);
+			prCommentPosted = true;
+		}
+		else
+		{
+			System.err.println("AI review PR comment skipped: missing github token.");
+		}
+
 		if(!decision.passed)
 		{
-			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
-			boolean prCommentPosted = false;
-			if(githubToken != null && !githubToken.isBlank())
-			{
-				postPullRequestComment(repository, prNumber, githubToken, failureMessage);
-				prCommentPosted = true;
-			}
-			else
-			{
-				System.err.println("AI review failure PR comment skipped: missing github token.");
-			}
-
 			int cliqSummaryLength = parseIntOrDefault(System.getenv("AI_REVIEW_CLIQ_SUMMARY_LENGTH"), 300);
 			String actionsRunUrl = buildActionsRunUrl(repository);
 			String cliqNotification = buildAiFailureCliqNotification(prNumber, pullRequestUrl, decision.summary, prCommentPosted, cliqSummaryLength, actionsRunUrl);
@@ -3845,7 +3851,7 @@ public class GitHub_Informer_New {
 	{
 		StringBuilder msg = new StringBuilder();
 		msg.append(AI_REVIEW_COMMENT_MARKER).append("\n");
-		msg.append("### AI Review Report\n\n");
+		msg.append("### AI Review Report - :x: Changes Requested\n\n");
 		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
 		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
 			msg.append("(").append(pullRequestUrl).append(")");
@@ -3853,6 +3859,28 @@ public class GitHub_Informer_New {
 		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review report")).append("\n\n");
 		msg.append("**Details (Step-by-step):**\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\n\n");
 		msg.append("Please fix the blocking issues and push new changes to rerun AI review.\n\n");
+		msg.append("_Last updated: ").append(java.time.Instant.now().toString()).append("_");
+		return msg.toString();
+	}
+
+	// Success-path counterpart of buildAiFailureMessage(). Posted (via the same upserting
+	// postPullRequestComment) whenever the AI review gate PASSES, so the PR always carries exactly
+	// one up-to-date AI review comment - reflecting the latest reviewed changed file(s) and any
+	// non-blocking notes with FILE/LINE references - instead of leaving a stale "Failed" comment
+	// behind from an earlier push, or posting no comment at all on a clean first pass.
+	public static String buildAiSuccessMessage(String prNumber, String pullRequestUrl, String summary, String details)
+	{
+		StringBuilder msg = new StringBuilder();
+		msg.append(AI_REVIEW_COMMENT_MARKER).append("\n");
+		msg.append("### AI Review Report - :white_check_mark: Passed\n\n");
+		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
+		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
+			msg.append("(").append(pullRequestUrl).append(")");
+		msg.append("\n\n");
+		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review passed with no blocking issues.")).append("\n\n");
+		if(details != null && !details.isBlank())
+			msg.append("**Details (Step-by-step):**\n").append(trimTo(details, 3000)).append("\n\n");
+		msg.append("No blocking issues found in the reviewed changed file(s).\n\n");
 		msg.append("_Last updated: ").append(java.time.Instant.now().toString()).append("_");
 		return msg.toString();
 	}
