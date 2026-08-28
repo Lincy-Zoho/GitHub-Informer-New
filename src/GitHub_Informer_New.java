@@ -3368,18 +3368,80 @@ public class GitHub_Informer_New {
 		return count;
 	}
 
+	// Splits the /files API's top-level JSON array into the substring for each individual file
+	// object (from one "{" that opens an array element to its matching "}"), tracking brace
+	// depth and string/escape state so that braces or quotes appearing inside string values
+	// (e.g. inside a "patch" field, which very often contains literal '{' or '}' characters
+	// from the source file's own code) never get mistaken for object boundaries. Extracting
+	// "filename"/"status"/"patch" independently WITHIN each object's own substring - rather than
+	// relying on a single regex to walk across field boundaries in file order with a lazy
+	// ".*?" - removes the field-ordering/backtracking fragility that could previously cause a
+	// perfectly present "patch" value to be missed (e.g. for files, like HTML, whose patch text
+	// contains many embedded quotes/backslashes) and wrongly reported as unreviewable.
+	public static java.util.List<String> splitJsonArrayIntoObjectStrings(String body)
+	{
+		java.util.List<String> objects = new java.util.ArrayList<String>();
+		if(body == null || body.isBlank())
+			return objects;
+
+		int depth = 0;
+		int objectStart = -1;
+		boolean inString = false;
+		boolean escaped = false;
+		for(int i = 0; i < body.length(); i++)
+		{
+			char c = body.charAt(i);
+			if(inString)
+			{
+				if(escaped)
+					escaped = false;
+				else if(c == '\\')
+					escaped = true;
+				else if(c == '"')
+					inString = false;
+				continue;
+			}
+			if(c == '"')
+			{
+				inString = true;
+				continue;
+			}
+			if(c == '{')
+			{
+				if(depth == 0)
+					objectStart = i;
+				depth++;
+			}
+			else if(c == '}')
+			{
+				depth--;
+				if(depth == 0 && objectStart >= 0)
+				{
+					objects.add(body.substring(objectStart, i + 1));
+					objectStart = -1;
+				}
+			}
+		}
+		return objects;
+	}
+
+	// NOTE: string-field extraction for "filename"/"status"/"patch" below reuses the existing
+	// extractJsonStringField(String json, String fieldName) helper defined elsewhere in this
+	// file (a hand-written, escape-aware scanner), which correctly handles values containing
+	// embedded quotes/backslashes/newlines - exactly what a "patch" value can contain - and
+	// returns null (not empty string) when the field is genuinely absent from the object.
+
 	public static String synthesizeUnifiedDiffFromFilesResponse(String body)
 	{
 		if(body == null || body.isBlank())
 			return "";
-		Matcher entryMatcher = Pattern.compile("\\\"filename\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\".*?\\\"status\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\".*?(?:\\\"patch\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\")?", Pattern.DOTALL).matcher(body);
 		StringBuilder sb = new StringBuilder();
 		int count = 0;
-		while(entryMatcher.find())
+		for(String objectJson : splitJsonArrayIntoObjectStrings(body))
 		{
-			String fileName = jsonUnescape(defaultIfBlank(entryMatcher.group(1), ""));
-			String status = jsonUnescape(defaultIfBlank(entryMatcher.group(2), ""));
-			String patch = jsonUnescape(defaultIfBlank(entryMatcher.group(3), ""));
+			String fileName = defaultIfBlank(extractJsonStringField(objectJson, "filename"), "");
+			String status = defaultIfBlank(extractJsonStringField(objectJson, "status"), "");
+			String patch = extractJsonStringField(objectJson, "patch");
 			if(fileName.isBlank())
 				continue;
 			count++;
@@ -3772,9 +3834,17 @@ public class GitHub_Informer_New {
 		return value.substring(0, maxLen) + "\\n\\n[truncated]";
 	}
 
+	// Hidden marker embedded (as an HTML comment, invisible when rendered) in every AI review PR
+	// comment this action posts. postPullRequestComment() searches existing PR comments for this
+	// exact marker so that each new run UPDATES (PATCH) the same comment in place - reflecting the
+	// latest set of changed files, findings, file names, and line numbers - instead of appending a
+	// brand-new comment on every push and cluttering the PR thread with stale, superseded reports.
+	public static final String AI_REVIEW_COMMENT_MARKER = "<!-- ai-review-gate-comment-marker: do-not-remove -->";
+
 	public static String buildAiFailureMessage(String prNumber, String pullRequestUrl, String summary, String details)
 	{
 		StringBuilder msg = new StringBuilder();
+		msg.append(AI_REVIEW_COMMENT_MARKER).append("\n");
 		msg.append("### AI Review Report\n\n");
 		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
 		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
@@ -3782,7 +3852,8 @@ public class GitHub_Informer_New {
 		msg.append("\n\n");
 		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review report")).append("\n\n");
 		msg.append("**Details (Step-by-step):**\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\n\n");
-		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
+		msg.append("Please fix the blocking issues and push new changes to rerun AI review.\n\n");
+		msg.append("_Last updated: ").append(java.time.Instant.now().toString()).append("_");
 		return msg.toString();
 	}
 
@@ -3831,15 +3902,34 @@ public class GitHub_Informer_New {
 		return serverUrl + "/" + repository + "/actions/runs/" + runId;
 	}
 
+	// Upserts the AI review PR comment instead of always creating a new one. Each run's comment
+	// body (buildAiFailureMessage / any AI-review comment) carries the hidden AI_REVIEW_COMMENT_MARKER.
+	// On every invocation this first looks for an EXISTING comment on the PR that already carries
+	// that marker: if found, it PATCHes that same comment in place (so the PR thread always shows
+	// exactly one, up-to-date AI review report reflecting the latest changed file(s), findings,
+	// file names, and line numbers); if none exists yet (first run on this PR), it POSTs a new one.
+	// Falls back to always POSTing a new comment if the existing-comments lookup itself fails, so a
+	// transient GitHub API hiccup never silently swallows the review result.
 	public static void postPullRequestComment(String repository, String prNumber, String githubToken, String commentBody)
 	{
 		try
 		{
-			String payload = "{\"body\":\"" + jsonEscape(commentBody) + "\"}";
 			HashMap<String, String> headers = new HashMap<String, String>();
 			headers.put("Accept", "application/vnd.github+json");
 			headers.put("Authorization", "Bearer " + githubToken);
 			headers.put("Content-Type", "application/json");
+
+			String existingCommentId = findExistingAiReviewCommentId(repository, prNumber, headers);
+			String payload = "{\"body\":\"" + jsonEscape(commentBody) + "\"}";
+
+			if(existingCommentId != null && !existingCommentId.isBlank())
+			{
+				HttpResult updateResponse = sendHttpRequest("PATCH", "https://api.github.com/repos/" + repository + "/issues/comments/" + existingCommentId, payload, headers);
+				if(updateResponse.status >= 200 && updateResponse.status <= 299)
+					return;
+				System.err.println("Failed to update existing AI review PR comment (id=" + existingCommentId + "): status=" + updateResponse.status + ", body=" + preview(updateResponse.body) + ". Falling back to creating a new comment.");
+			}
+
 			HttpResult response = sendHttpRequest("POST", "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments", payload, headers);
 			if(response.status < 200 || response.status > 299)
 				System.err.println("Failed to post AI review PR comment: status=" + response.status + ", body=" + preview(response.body));
@@ -3847,6 +3937,57 @@ public class GitHub_Informer_New {
 		catch(Exception e)
 		{
 			System.err.println("Failed to post AI review PR comment: " + e.getMessage());
+		}
+	}
+
+	// Pages through this PR's issue comments (newest concerns are rare enough that PR comment
+	// counts stay small, but paginate defensively anyway) looking for one whose body contains
+	// AI_REVIEW_COMMENT_MARKER. Returns that comment's id as a String, or null if none is found or
+	// the lookup fails for any reason (caller falls back to creating a new comment in that case).
+	public static String findExistingAiReviewCommentId(String repository, String prNumber, Map<String, String> headers)
+	{
+		try
+		{
+			int page = 1;
+			int maxPages = 10;
+			while(page <= maxPages)
+			{
+				String url = "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments?per_page=100&page=" + page;
+				HttpResult response = sendHttpRequest("GET", url, null, headers);
+				if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
+					return null;
+				String body = response.body;
+				if(isEmptyJsonArrayBody(body))
+					return null;
+
+				java.util.List<String> objects = splitJsonArrayIntoObjectStrings(body);
+				for(String obj : objects)
+				{
+					String commentBodyField = extractJsonStringField(obj, "body");
+					if(commentBodyField != null && commentBodyField.contains(AI_REVIEW_COMMENT_MARKER))
+					{
+						String idField = extractJsonStringField(obj, "id");
+						if(idField == null || idField.isBlank())
+						{
+							Matcher idMatcher = Pattern.compile("\"id\"\\s*:\\s*(\\d+)").matcher(obj);
+							if(idMatcher.find())
+								idField = idMatcher.group(1);
+						}
+						if(idField != null && !idField.isBlank())
+							return idField;
+					}
+				}
+
+				if(objects.size() < 100)
+					return null;
+				page++;
+			}
+			return null;
+		}
+		catch(Exception e)
+		{
+			debug("Lookup of existing AI review PR comment failed: " + e.getMessage());
+			return null;
 		}
 	}
 
