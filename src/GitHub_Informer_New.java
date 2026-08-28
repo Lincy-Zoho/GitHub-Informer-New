@@ -1060,7 +1060,7 @@ public class GitHub_Informer_New {
 
 	public static HttpResult postJson(String endpoint, String payload) throws IOException
 	{
-		debug("POST endpoint=" + endpoint + ", payloadPreview=" + preview(payload));
+		debug("POST endpoint=" + redactSecrets(endpoint) + ", payloadPreview=" + preview(payload));
 		HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
 		connection.setRequestMethod("POST");
 		connection.setRequestProperty("Content-Type", "application/json");
@@ -1090,7 +1090,7 @@ public class GitHub_Informer_New {
 
 	public static HttpResult sendHttpRequest(String method, String endpoint, String payload, Map<String, String> headers) throws IOException
 	{
-		debug(method + " endpoint=" + endpoint + ", payloadPreview=" + preview(payload));
+		debug(method + " endpoint=" + redactSecrets(endpoint) + ", payloadPreview=" + preview(payload));
 		String currentEndpoint = endpoint;
 		for(int redirectCount = 0; redirectCount < 5; redirectCount++)
 		{
@@ -1121,7 +1121,7 @@ public class GitHub_Informer_New {
 				if(location != null && !location.isBlank())
 				{
 					currentEndpoint = new URL(new URL(currentEndpoint), location).toString();
-					debug(method + " redirecting to=" + currentEndpoint);
+					debug(method + " redirecting to=" + redactSecrets(currentEndpoint));
 					continue;
 				}
 			}
@@ -1129,7 +1129,7 @@ public class GitHub_Informer_New {
 			debug(method + " response status=" + status + ", bodyPreview=" + preview(body));
 			return new HttpResult(status, body);
 		}
-		debug(method + " exceeded redirect limit for endpoint=" + endpoint);
+		debug(method + " exceeded redirect limit for endpoint=" + redactSecrets(endpoint));
 		return new HttpResult(500, "");
 	}
 
@@ -2143,6 +2143,19 @@ public class GitHub_Informer_New {
 		}
 		String diff = diffResult.diff;
 
+		// Deterministic safety net #0 (UNREVIEWABLE FILES): must run before any other check and
+		// before the diff is handed to the AI. When GitHub cannot provide a textual patch for a
+		// changed file (binary detection, per-file patch size cap, etc.), the diff-synthesis path
+		// embeds a "[UNREVIEWABLE: ...]" marker for that file instead of its real content. That
+		// marker is only a prompt instruction telling the AI "don't fabricate findings for this
+        // file" - it must never be allowed to fall through as an implicit pass, since neither the
+        // static regex checks nor the AI ever actually see the file's real content in that case.
+        // A security gate must fail closed (require manual review) rather than fail open (assume
+        // the invisible content is safe) whenever any file could not actually be reviewed.
+		String unreviewableFindings = findUnreviewableFiles(diff);
+		if(unreviewableFindings != null && !unreviewableFindings.isBlank())
+			return new AiReviewDecision(false, "AI Review Gate failed", "One or more changed files could not be reviewed (no diff content was available). Failing closed instead of assuming they are safe.", unreviewableFindings);
+
 		// Deterministic safety net #1 (REMOVALS): must run on the RAW diff, BEFORE '-' lines are
 		// stripped below. A PR that deletes a security control (an auth/permission check, input
 		// sanitization, validation, encoding, a try/catch guarding a sensitive call, etc.) without
@@ -2398,6 +2411,38 @@ public class GitHub_Informer_New {
 			"Restore the removed verification step, or confirm the trust boundary is still enforced elsewhere before merging."
 		));
 		return rules;
+	}
+
+	// Detects the "[UNREVIEWABLE: ...]" marker that synthesizeUnifiedDiffFromFilesResponse()
+	// embeds in place of a file's real content when GitHub's files API returned no "patch" field
+	// for that file (binary detection, per-file patch size cap, etc.). The marker text itself
+	// always names the affected FILE, so it is parsed back out here to produce a normal
+	// DETAILS-style findings string that hard-fails the gate instead of silently passing.
+	private static final Pattern UNREVIEWABLE_FILE_PATTERN = Pattern.compile("\\[UNREVIEWABLE: [^\\]]*?FILE: ([^,\\]]+)");
+
+	public static String findUnreviewableFiles(String diff)
+	{
+		if(diff == null || diff.isBlank())
+			return null;
+		Matcher matcher = UNREVIEWABLE_FILE_PATTERN.matcher(diff);
+		ArrayList<String> files = new ArrayList<String>();
+		while(matcher.find())
+		{
+			String fileName = matcher.group(1) == null ? "" : matcher.group(1).trim();
+			if(!fileName.isEmpty() && !files.contains(fileName))
+				files.add(fileName);
+		}
+		if(files.isEmpty())
+			return null;
+		StringBuilder sb = new StringBuilder();
+		int i = 0;
+		for(String fileName : files)
+		{
+			i++;
+			sb.append(i).append(". FILE: ").append(fileName)
+				.append(", LINE: n/a, ISSUE: GitHub did not return diff content for this file (binary detection or per-file patch size limit), so it could not be scanned by static checks or the AI, FIX: review this file manually before merging; do not assume it is safe.\n");
+		}
+		return sb.toString();
 	}
 
 	// Scans only '-' (removed) lines of the RAW unified diff (must be called BEFORE
@@ -3877,6 +3922,18 @@ public class GitHub_Informer_New {
 	public static void debug(String message)
 	{
 		System.out.println("[CliqInformerDebug] " + message);
+	}
+
+	// Masks sensitive query-string values (e.g. Gemini's "?key=<API_KEY>") before a URL is
+	// written to logs. Gemini authenticates via a query parameter rather than a header, so the
+	// live API key would otherwise be printed verbatim in CI/Actions logs by debug() calls that
+	// include the raw endpoint. Handles "key=", "token=", "apikey=", "api_key=", "access_token="
+	// (case-insensitive) as either the first "?param=" or a subsequent "&param=" segment.
+	public static String redactSecrets(String url)
+	{
+		if(url == null)
+			return null;
+		return url.replaceAll("(?i)([?&](?:key|token|apikey|api_key|access_token)=)[^&]+", "$1REDACTED");
 	}
 
 	public static String preview(String value)
