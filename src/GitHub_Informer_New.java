@@ -1959,7 +1959,7 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic.";
+		String systemPrompt = "You are a strict PR reviewer. Return valid GitHub-flavored Markdown for the final comment. Use headings, bullets, tables, bold, emphasis, and code fences if helpful. Keep the answer readable in a GitHub PR comment. Required structure: a RESULT line, a short SUMMARY line, and a DETAILS section. For each detail item include FILE, LINE, ISSUE, and FIX. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. IMPORTANT: do not escape markdown characters or output plain text-only content. The final response must be valid Markdown for GitHub.";
 
 		try
 		{
@@ -1982,6 +1982,13 @@ public class GitHub_Informer_New {
 			String details = formatAiReviewDetails(content);
 			if(details == null || details.isBlank())
 				details = "1. No detailed issues were returned by the AI response.";
+			if(looksLikeMarkdownReview(content))
+			{
+				details = content.trim();
+				String markdownSummary = extractMarkdownSummary(content);
+				if(markdownSummary != null && !markdownSummary.isBlank())
+					summary = markdownSummary;
+			}
 			return new AiReviewDecision(passed, summary, details);
 		}
 		catch(Exception e)
@@ -2483,6 +2490,29 @@ public class GitHub_Informer_New {
 		return null;
 	}
 
+	public static boolean looksLikeMarkdownReview(String content)
+	{
+		if(content == null || content.isBlank())
+			return false;
+		String normalized = content.trim();
+		return normalized.contains("# ") || normalized.contains("## ") || normalized.contains("| ")
+			|| normalized.contains("**") || normalized.contains("```") || normalized.contains("> ")
+			|| normalized.contains("- [x]") || normalized.contains("- [ ]");
+	}
+
+	public static String extractMarkdownSummary(String content)
+	{
+		if(content == null || content.isBlank())
+			return "";
+		Matcher matcher = Pattern.compile("(?im)^\s*SUMMARY\s*[:=]\s*(.+)$").matcher(content);
+		if(matcher.find())
+			return matcher.group(1).trim();
+		Matcher heading = Pattern.compile("(?im)^\s*#+\s*(.+)$").matcher(content);
+		if(heading.find())
+			return heading.group(1).trim();
+		return "";
+	}
+
 	public static String jsonUnescape(String raw)
 	{
 		if(raw == null)
@@ -2501,6 +2531,19 @@ public class GitHub_Informer_New {
 
 	public static String buildAiFailureMessage(String prNumber, String pullRequestUrl, String summary, String details)
 	{
+		String trimmedDetails = defaultIfBlank(details, "No details provided.");
+		if(looksLikeMarkdownReview(trimmedDetails))
+		{
+			StringBuilder msg = new StringBuilder();
+			msg.append("### AI Review Report\n\n");
+			msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
+			if(pullRequestUrl != null && !pullRequestUrl.isBlank())
+				msg.append("(").append(pullRequestUrl).append(")");
+			msg.append("\n\n");
+			msg.append(trimTo(trimmedDetails, 6000)).append("\n\n");
+			msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
+			return msg.toString();
+		}
 		StringBuilder msg = new StringBuilder();
 		msg.append("### AI Review Report\n\n");
 		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
@@ -2508,7 +2551,7 @@ public class GitHub_Informer_New {
 			msg.append("(").append(pullRequestUrl).append(")");
 		msg.append("\n\n");
 		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review report")).append("\n\n");
-		msg.append("**Details (Step-by-step):**\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\n\n");
+		msg.append("**Details (Step-by-step):**\n").append(trimTo(trimmedDetails, 3000)).append("\n\n");
 		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
 		return msg.toString();
 	}
