@@ -1967,7 +1967,7 @@ public class GitHub_Informer_New {
 			if(aiResponse.status < 200 || aiResponse.status > 299)
 				return new AiReviewDecision(false, "AI Review Gate failed", provider + " request failed with status " + aiResponse.status + ".");
 
-			String content = extractAiContent(aiResponse.body, provider);
+			String content = normalizeEscapedMarkdownText(extractAiContent(aiResponse.body, provider));
 			if(content == null || content.isBlank())
 				return new AiReviewDecision(false, "AI Review Gate failed", provider + " returned empty content.");
 
@@ -2341,12 +2341,10 @@ public class GitHub_Informer_New {
 
 	public static String formatAiReviewDetails(String content)
 	{
-		String source = defaultIfBlank(content, "");
+		String source = normalizeEscapedMarkdownText(defaultIfBlank(content, ""));
 		if(source.isBlank())
 			return "";
 		source = trimTo(source, 12000);
-
-		source = source.replace("\\r", "").replace("\\\\n", "\\n");
 		Matcher detailsMatcher = Pattern.compile("(?is)\\bDETAILS\\b\\s*[:=]\\s*(.+)$").matcher(source);
 		if(detailsMatcher.find())
 			source = detailsMatcher.group(1).trim();
@@ -2400,7 +2398,7 @@ public class GitHub_Informer_New {
 		{
 			formatted.append(i + 1).append(". ").append(points.get(i));
 			if(i < limit - 1)
-				formatted.append("\\n");
+				formatted.append("\n");
 		}
 		return formatted.toString();
 	}
@@ -2494,23 +2492,33 @@ public class GitHub_Informer_New {
 	{
 		if(content == null || content.isBlank())
 			return false;
-		String normalized = content.trim();
+		String normalized = normalizeEscapedMarkdownText(content).trim();
 		return normalized.contains("# ") || normalized.contains("## ") || normalized.contains("| ")
 			|| normalized.contains("**") || normalized.contains("```") || normalized.contains("> ")
-			|| normalized.contains("- [x]") || normalized.contains("- [ ]");
+			|| normalized.contains("- [x]") || normalized.contains("- [ ]") || normalized.contains("\n1.") || normalized.contains("\n- ");
 	}
 
 	public static String extractMarkdownSummary(String content)
 	{
 		if(content == null || content.isBlank())
 			return "";
-		Matcher matcher = Pattern.compile("(?im)^\s*SUMMARY\s*[:=]\s*(.+)$").matcher(content);
+		String normalized = normalizeEscapedMarkdownText(content);
+		Matcher matcher = Pattern.compile("(?im)^\s*SUMMARY\s*[:=]\s*(.+)$").matcher(normalized);
 		if(matcher.find())
 			return matcher.group(1).trim();
-		Matcher heading = Pattern.compile("(?im)^\s*#+\s*(.+)$").matcher(content);
+		Matcher heading = Pattern.compile("(?im)^\s*#+\s*(.+)$").matcher(normalized);
 		if(heading.find())
 			return heading.group(1).trim();
 		return "";
+	}
+
+	public static String normalizeEscapedMarkdownText(String raw)
+	{
+		if(raw == null)
+			return "";
+		String value = raw.replace("\\r\\n", "\n").replace("\\r", "\n").replace("\\n", "\n");
+		value = value.replace("\r\n", "\n").replace("\r", "\n");
+		return value;
 	}
 
 	public static String jsonUnescape(String raw)
@@ -2526,7 +2534,7 @@ public class GitHub_Informer_New {
 			return "";
 		if(value.length() <= maxLen)
 			return value;
-		return value.substring(0, maxLen) + "\\n\\n[truncated]";
+		return value.substring(0, maxLen) + "\n\n[truncated]";
 	}
 
 	public static String buildAiFailureMessage(String prNumber, String pullRequestUrl, String summary, String details)
