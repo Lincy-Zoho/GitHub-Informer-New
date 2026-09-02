@@ -1961,7 +1961,7 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Return valid GitHub-flavored Markdown for the final comment. Use headings, bullets, tables, bold, emphasis, and code fences if helpful. Keep the answer readable in a GitHub PR comment. Required structure: a RESULT line, a short SUMMARY line, and a DETAILS section. For each detail item include FILE, LINE, ISSUE, and FIX. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. PR title and description are optional context only. If the title is missing, vague, or the description is incomplete, ignore that and judge the change by the actual code diff. Do not block the review because the PR description is weak or blank. If the PR only changes a version number, workflow tag, release metadata, or dependency version and there is no logic, security, or regression change, return RESULT: PASS, SUMMARY: Version-only change, and DETAILS: 1. No functional issue detected in this version-only update. Do not fabricate issues for harmless version bumps. Fail only when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. IMPORTANT: do not escape markdown characters or output plain text-only content. The final response must be valid Markdown for GitHub. If you detect absolutely no code behavior change, do not invent file or line issues.";
+		String systemPrompt = "You are a strict PR reviewer. Return valid GitHub-flavored Markdown for the final comment. Use simple numbered bullet points, bold emphasis, and short headings only. Do not use markdown tables. Keep the response readable in a GitHub PR comment. Required structure: a RESULT line, a short SUMMARY line, and a DETAILS section. For each detail item include FILE, LINE, ISSUE, and FIX in plain numbered list form like: 1. FILE: path | LINE: n/a | ISSUE: ... | FIX: ... Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. PR title and description are optional context only. If the title is missing, vague, or the description is incomplete, ignore that and judge the change by the actual code diff. Do not block the review because the PR description is weak or blank. If the PR only changes a version number, workflow tag, release metadata, or dependency version and there is no logic, security, or regression change, return RESULT: PASS, SUMMARY: Version-only change, and DETAILS: 1. No functional issue detected in this version-only update. Do not fabricate issues for harmless version bumps. Fail only when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. IMPORTANT: do not escape markdown characters or output plain text-only content. The final response must be valid Markdown for GitHub but without markdown tables. If you detect absolutely no code behavior change, do not invent file or line issues.";
 
 		try
 		{
@@ -2364,6 +2364,10 @@ public class GitHub_Informer_New {
 				continue;
 			String line = rawLine.trim();
 			if(line.isBlank())
+				continue;
+			if(line.contains("|") && line.matches(".*\\|.*\\|.*"))
+				continue;
+			if(line.matches("(?i)^\\s*\\|?\\s*[:\- ]+\\|[:\- |\\s]+\\|?\\s*$"))
 				continue;
 
 			line = line.replaceFirst("(?i)^\\s*(RESULT|VERDICT|DECISION|OUTCOME)\\s*[:=]\\s*(PASS|FAIL|FAILED|APPROVED|REJECTED)\\s*", "").trim();
