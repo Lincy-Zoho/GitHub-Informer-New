@@ -21,11 +21,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 public class GitHub_Informer_New {
 	public static void main(String args[]) {
-		if(args != null && args.length > 0 && "ai-review-markdown-test".equalsIgnoreCase(args[0]))
-		{
-			runAiReviewMarkdownTest();
-			return;
-		}
 		System.out.println("Calling Cliq...");
 		Integer MAX_MESSAGE_LENGTH = 4096;
 		String MESSAGE_BREAK = "\\n";
@@ -1836,6 +1831,7 @@ public class GitHub_Informer_New {
 		public String summary;
 		public String details;
 		public String reason;
+		public ArrayList<String> issueComments;
 
 		public AiReviewDecision(boolean passed, String summary, String details)
 		{
@@ -1859,6 +1855,7 @@ public class GitHub_Informer_New {
 			this.summary = summary == null ? "" : summary;
 			this.details = details == null ? "" : details;
 			this.reason = reason == null ? "" : reason;
+			this.issueComments = new ArrayList<String>();
 		}
 	}
 
@@ -1898,14 +1895,26 @@ public class GitHub_Informer_New {
 
 		if(!decision.passed)
 		{
-			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
-			if(githubToken != null && !githubToken.isBlank())
+			ArrayList<String> issueComments = decision.issueComments == null ? new ArrayList<String>() : decision.issueComments;
+			if(issueComments != null && !issueComments.isEmpty())
 			{
-				postPullRequestComment(repository, prNumber, githubToken, failureMessage);
+				for(String issueComment : issueComments)
+				{
+					if(githubToken != null && !githubToken.isBlank())
+						postPullRequestComment(repository, prNumber, githubToken, issueComment);
+				}
 			}
-			else
+			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
+			if(issueComments == null || issueComments.isEmpty())
 			{
-				System.err.println("AI review failure PR comment skipped: missing github token.");
+				if(githubToken != null && !githubToken.isBlank())
+				{
+					postPullRequestComment(repository, prNumber, githubToken, failureMessage);
+				}
+				else
+				{
+					System.err.println("AI review failure PR comment skipped: missing github token.");
+				}
 			}
 
 			postAiFailureToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, failureMessage);
@@ -1994,30 +2003,16 @@ public class GitHub_Informer_New {
 				if(details == null || details.isBlank())
 					details = "1. No detailed issues were returned by the AI response.";
 				String reason = defaultIfBlank(structured.reason, passed ? "AI review passed." : "AI review did not pass the gate.");
+				AiReviewDecision decision = new AiReviewDecision(passed, status, summary, details, reason);
+				decision.issueComments = extractIssueCommentsFromAiContent(content, aiResponse.body);
 				if("PARTIAL".equals(status))
 					return new AiReviewDecision(false, "PARTIAL", summary, details, reason);
-				return new AiReviewDecision(passed, status, summary, details, reason);
+				if(!passed)
+					return decision;
+				return decision;
 			}
 
-			Boolean passedDecision = parseAiPassFail(content, aiResponse.body);
-			if(passedDecision == null)
-				return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", "AI response did not include a valid status. Response preview: " + trimTo(defaultIfBlank(content, aiResponse.body), 800), "The AI result was empty, malformed, or missing the required status field.");
-
-			boolean passed = passedDecision.booleanValue();
-			String summary = extractLine(content, "SUMMARY");
-			if(summary == null || summary.isBlank())
-				summary = passed ? "AI review passed" : "AI review report";
-			String details = formatAiReviewDetails(content);
-			if(details == null || details.isBlank())
-				details = "1. No detailed issues were returned by the AI response.";
-			if(looksLikeMarkdownReview(content))
-			{
-				details = content.trim();
-				String markdownSummary = extractMarkdownSummary(content);
-				if(markdownSummary != null && !markdownSummary.isBlank())
-					summary = markdownSummary;
-			}
-			return new AiReviewDecision(passed, summary, details);
+			return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", "AI response did not include a valid status. Response preview: " + trimTo(defaultIfBlank(content, aiResponse.body), 800), "The AI result was empty, malformed, or missing the required status field.");
 		}
 		catch(Exception e)
 		{
@@ -2366,7 +2361,7 @@ public class GitHub_Informer_New {
 	{
 		if(content == null)
 			return "";
-		Matcher matcher = Pattern.compile("(?im)^\\s*" + Pattern.quote(key) + "\\s*:\\s*(.+)$").matcher(content);
+		Matcher matcher = Pattern.compile("(?im)^\\s*" + Pattern.quote(key) + "\\s*[:=]\\s*(.+)$").matcher(content);
 		if(matcher.find())
 			return matcher.group(1).trim();
 		return "";
@@ -2374,99 +2369,15 @@ public class GitHub_Informer_New {
 
 	public static String formatAiReviewDetails(String content)
 	{
-		String source = normalizeEscapedMarkdownText(defaultIfBlank(content, ""));
+		if(content == null || content.isBlank())
+			return "";
+		String source = normalizeEscapedMarkdownText(content).trim();
 		if(source.isBlank())
 			return "";
-		source = trimTo(source, 12000);
-		Matcher detailsMatcher = Pattern.compile("(?is)\\bDETAILS\\b\\s*[:=]\\s*(.+)$").matcher(source);
-		if(detailsMatcher.find())
-			source = detailsMatcher.group(1).trim();
-		String[] lines = source.split("\\n");
-
-		ArrayList<String> points = new ArrayList<String>();
-		for(String rawLine : lines)
-		{
-			if(rawLine == null)
-				continue;
-			String line = rawLine.trim();
-			if(line.isBlank())
-				continue;
-			if(line.contains("|") && line.matches(".*\\|.*\\|.*"))
-				continue;
-			if(line.matches("(?i)^\\s*(?:\\|)?\\s*[:\\- ]+\\|[:\\- |\\s]+(?:\\|)?\\s*$"))
-				continue;
-
-			line = line.replaceFirst("(?i)^\\s*(RESULT|VERDICT|DECISION|OUTCOME)\\s*[:=]\\s*(PASS|FAIL|FAILED|APPROVED|REJECTED)\\s*", "").trim();
-			line = line.replaceFirst("(?i)^\\s*SUMMARY\\s*[:=]\\s*", "").trim();
-			line = line.replaceFirst("(?i)^\\s*DETAILS\\s*[:=]\\s*", "").trim();
-			if(line.isBlank())
-				continue;
-
-			ArrayList<String> fragments = splitInlineNumberedPoints(line);
-			for(String fragment : fragments)
-			{
-				String item = defaultIfBlank(fragment, "").trim();
-				if(item.isBlank())
-					continue;
-
-				item = item.replaceFirst("^\\s*[-*]\\s+", "");
-				item = item.replaceFirst("^\\s*\\d+[.)]\\s+", "");
-				item = item.trim();
-				if(item.isBlank())
-					continue;
-				points.add(item);
-			}
-		}
-
-		if(points.isEmpty())
-		{
-			String flattened = source.replaceAll("(?i)\\b(RESULT|SUMMARY|DETAILS|VERDICT|DECISION|OUTCOME)\\s*[:=]", "");
-			flattened = flattened.replace("\\n", " ").replaceAll("\\s+", " ").trim();
-			if(!flattened.isBlank())
-				points.add(flattened);
-		}
-
-		if(points.isEmpty())
-			return "";
-
-		StringBuilder formatted = new StringBuilder();
-		int limit = Math.min(points.size(), 10);
-		for(int i = 0; i < limit; i++)
-		{
-			formatted.append(i + 1).append(". ").append(points.get(i));
-			if(i < limit - 1)
-				formatted.append("\n");
-		}
-		return formatted.toString();
-	}
-
-	public static ArrayList<String> splitInlineNumberedPoints(String line)
-	{
-		ArrayList<String> parts = new ArrayList<String>();
-		String source = defaultIfBlank(line, "").trim();
-		if(source.isBlank())
-			return parts;
-
-		Matcher matcher = Pattern.compile("(?:(?<=^)|(?<=\\s))(\\d+[.)])\\s+").matcher(source);
-		ArrayList<Integer> starts = new ArrayList<Integer>();
-		while(matcher.find())
-			starts.add(matcher.start(1));
-
-		if(starts.size() >= 2 || (starts.size() == 1 && starts.get(0) == 0))
-		{
-			for(int i = 0; i < starts.size(); i++)
-			{
-				int start = starts.get(i);
-				int end = (i + 1 < starts.size()) ? starts.get(i + 1) : source.length();
-				String part = source.substring(start, end).trim();
-				if(!part.isBlank())
-					parts.add(part);
-			}
-		}
-
-		if(parts.isEmpty())
-			parts.add(source);
-		return parts;
+		String details = extractStructuredIssueText(source);
+		if(details != null && !details.isBlank())
+			return details;
+		return source;
 	}
 
 	public static StructuredAiReviewResult parseStructuredAiReview(String content, String rawBody)
@@ -2475,14 +2386,20 @@ public class GitHub_Informer_New {
 		if(source == null || source.isBlank())
 			return null;
 		String trimmed = source.trim();
-		if(trimmed.startsWith("{") && trimmed.endsWith("}"))
+		StructuredAiReviewResult result = new StructuredAiReviewResult();
+		result.status = extractJsonStringField(trimmed, "status");
+		if(result.status == null || result.status.isBlank())
+			result.status = extractJsonStringField(trimmed, "result");
+		if(result.status == null || result.status.isBlank())
+			result.status = extractJsonStringField(trimmed, "verdict");
+		if(result.status == null || result.status.isBlank())
 		{
-			StructuredAiReviewResult result = new StructuredAiReviewResult();
-			result.status = extractJsonStringField(trimmed, "status");
-			if(result.status == null || result.status.isBlank())
-				result.status = extractJsonStringField(trimmed, "result");
-			if(result.status == null || result.status.isBlank())
-				result.status = extractJsonStringField(trimmed, "verdict");
+			Matcher statusLine = Pattern.compile("(?is)\"?(?:status|result|verdict|decision|outcome)\"?\\s*[:=]\\s*\"?(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\"?").matcher(trimmed);
+			if(statusLine.find())
+				result.status = statusLine.group(1).trim();
+		}
+		if(result.status != null && !result.status.isBlank())
+		{
 			result.summary = extractJsonStringField(trimmed, "summary");
 			result.reason = extractJsonStringField(trimmed, "reason");
 			if(result.reason == null || result.reason.isBlank())
@@ -2490,14 +2407,12 @@ public class GitHub_Informer_New {
 			result.details = extractStructuredIssueText(trimmed);
 			if(result.details == null || result.details.isBlank())
 				result.details = formatAiReviewDetails(trimmed);
-			if(result.status != null && !result.status.isBlank())
-				return result;
+			return result;
 		}
 
 		Matcher statusLine = Pattern.compile("(?im)^\\s*(?:status|result|verdict|decision|outcome)\\s*[:=]\\s*(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\\b").matcher(source);
 		if(statusLine.find())
 		{
-			StructuredAiReviewResult result = new StructuredAiReviewResult();
 			result.status = statusLine.group(1).trim().toUpperCase();
 			result.summary = extractLine(source, "SUMMARY");
 			result.reason = extractLine(source, "REASON");
@@ -2511,102 +2426,43 @@ public class GitHub_Informer_New {
 	{
 		if(json == null || json.isBlank())
 			return "";
-		Matcher arrayMatcher = Pattern.compile("(?is)\"issues\"\\s*:\\s*\\[(.*?)]").matcher(json);
-		if(!arrayMatcher.find())
-			return "";
 		ArrayList<String> issueTexts = new ArrayList<String>();
-		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"(.*?)\"\\s*,\\s*\"line\"\\s*:\\s*\"(.*?)\"\\s*,\\s*\"issue\"\\s*:\\s*\"(.*?)\"\\s*,\\s*\"fix\"\\s*:\\s*\"(.*?)\"\\s*\\}");
-		Matcher itemMatcher = itemPattern.matcher(arrayMatcher.group(1));
+		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+		Matcher itemMatcher = itemPattern.matcher(json);
 		while(itemMatcher.find())
 		{
-			String file = itemMatcher.group(1);
-			String line = itemMatcher.group(2);
-			String issue = itemMatcher.group(3);
-			String fix = itemMatcher.group(4);
+			String file = jsonUnescape(itemMatcher.group(1));
+			String line = jsonUnescape(itemMatcher.group(2));
+			String issue = jsonUnescape(itemMatcher.group(3));
+			String fix = jsonUnescape(itemMatcher.group(4));
 			issueTexts.add("FILE: " + defaultIfBlank(file, "n/a") + " | LINE: " + defaultIfBlank(line, "n/a") + " | ISSUE: " + defaultIfBlank(issue, "No issue provided.") + " | FIX: " + defaultIfBlank(fix, "No fix provided."));
 		}
 		return String.join("\n", issueTexts);
 	}
 
-	public static Boolean parseAiPassFail(String content, String rawBody)
+	public static ArrayList<String> extractIssueCommentsFromAiContent(String content, String rawBody)
 	{
-		String source = defaultIfBlank(content, "");
-		if(source.isBlank())
-			source = defaultIfBlank(rawBody, "");
-		source = trimTo(source, 12000);
-
-		String patterns = "(PASS|FAIL|FAILED|PARTIAL|APPROVED|REJECTED)";
-		Matcher labeled = Pattern.compile("(?im)\\b(RESULT|VERDICT|DECISION|OUTCOME|STATUS)\\b\\s*(?:[:=]|-|->|=>)\\s*" + patterns + "\\b").matcher(source);
-		if(labeled.find())
-			return mapDecisionToken(labeled.group(2));
-
-		Matcher markdownList = Pattern.compile("(?im)^\\s*[-*]\\s*(RESULT|VERDICT|DECISION|OUTCOME|STATUS)\\s*(?:[:=]|-|->|=>)\\s*" + patterns + "\\b").matcher(source);
-		if(markdownList.find())
-			return mapDecisionToken(markdownList.group(2));
-
-		Matcher jsonResult = Pattern.compile("(?im)\"(result|verdict|decision|outcome|status)\"\\s*:\\s*\"" + patterns + "\"").matcher(source);
-		if(jsonResult.find())
-			return mapDecisionToken(jsonResult.group(2));
-
-		Matcher standalone = Pattern.compile("(?im)^\\s*" + patterns + "\\s*$").matcher(source);
-		if(standalone.find())
-			return mapDecisionToken(standalone.group(1));
-
-		return null;
-	}
-
-	public static void runAiReviewMarkdownTest()
-	{
-		String content = "RESULT: **PASS**\n"
-			+ "SUMMARY: **Looks good**\n"
-			+ "DETAILS:\n"
-			+ "1. **Authentication check** is missing after the token change.\n"
-			+ "2. **Fallback logic** should be added to avoid null handling errors.";
-
-		Boolean passed = parseAiPassFail(content, content);
-		if(passed == null || !passed.booleanValue())
-			throw new AssertionError("Expected PASS detection when markdown is present: " + passed);
-
-		String details = formatAiReviewDetails(content);
-		if(!details.contains("**Authentication check**") || !details.contains("**Fallback logic**"))
-			throw new AssertionError("Markdown formatting was stripped from AI review details: " + details);
-
-		System.out.println("AI review markdown regression test passed.");
-	}
-
-	public static Boolean mapDecisionToken(String token)
-	{
-		String normalized = defaultIfBlank(token, "").trim().toUpperCase();
-		if("PASS".equals(normalized) || "APPROVED".equals(normalized))
-			return true;
-		if("FAIL".equals(normalized) || "FAILED".equals(normalized) || "REJECTED".equals(normalized) || "PARTIAL".equals(normalized))
-			return false;
-		return null;
-	}
-
-	public static boolean looksLikeMarkdownReview(String content)
-	{
-		if(content == null || content.isBlank())
-			return false;
-		String normalized = normalizeEscapedMarkdownText(content).trim();
-		return normalized.contains("# ") || normalized.contains("## ") || normalized.contains("| ")
-			|| normalized.contains("**") || normalized.contains("```") || normalized.contains("> ")
-			|| normalized.contains("- [x]") || normalized.contains("- [ ]") || normalized.contains("\n1.") || normalized.contains("\n- ");
-	}
-
-
-	public static String extractMarkdownSummary(String content)
-	{
-		if(content == null || content.isBlank())
-			return "";
-		String normalized = normalizeEscapedMarkdownText(content);
-		Matcher matcher = Pattern.compile("(?im)^\s*SUMMARY\s*[:=]\s*(.+)$").matcher(normalized);
-		if(matcher.find())
-			return matcher.group(1).trim();
-		Matcher heading = Pattern.compile("(?im)^\s*#+\s*(.+)$").matcher(normalized);
-		if(heading.find())
-			return heading.group(1).trim();
-		return "";
+		String source = normalizeEscapedMarkdownText(defaultIfBlank(content, defaultIfBlank(rawBody, "")));
+		if(source == null || source.isBlank())
+			return new ArrayList<String>();
+		ArrayList<String> comments = new ArrayList<String>();
+		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+		Matcher itemMatcher = itemPattern.matcher(source);
+		while(itemMatcher.find())
+		{
+			String file = jsonUnescape(defaultIfBlank(itemMatcher.group(1), "n/a"));
+			String line = jsonUnescape(defaultIfBlank(itemMatcher.group(2), "n/a"));
+			String issue = jsonUnescape(defaultIfBlank(itemMatcher.group(3), "No issue provided."));
+			String fix = jsonUnescape(defaultIfBlank(itemMatcher.group(4), "No fix provided."));
+			StringBuilder msg = new StringBuilder();
+			msg.append("### AI Review Finding\n\n");
+			msg.append("**File:** ").append(file).append("\n");
+			msg.append("**Line:** ").append(line).append("\n");
+			msg.append("**Issue:** ").append(issue).append("\n");
+			msg.append("**Fix:** ").append(fix).append("\n");
+			comments.add(msg.toString());
+		}
+		return comments;
 	}
 
 	public static String normalizeEscapedMarkdownText(String raw)
@@ -2637,20 +2493,6 @@ public class GitHub_Informer_New {
 	public static String buildAiFailureMessage(String prNumber, String pullRequestUrl, String summary, String details)
 	{
 		String trimmedDetails = defaultIfBlank(details, "No details provided.");
-		if(looksLikeMarkdownReview(trimmedDetails))
-		{
-			StringBuilder msg = new StringBuilder();
-			msg.append("### AI Review Report\n\n");
-			msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
-			if(pullRequestUrl != null && !pullRequestUrl.isBlank())
-				msg.append("(").append(pullRequestUrl).append(")");
-			msg.append("\n\n");
-			msg.append("**Status:** FAIL\n\n");
-			msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review report")).append("\n\n");
-			msg.append(trimTo(trimmedDetails, 6000)).append("\n\n");
-			msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
-			return msg.toString();
-		}
 		StringBuilder msg = new StringBuilder();
 		msg.append("### AI Review Report\n\n");
 		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
@@ -2659,7 +2501,7 @@ public class GitHub_Informer_New {
 		msg.append("\n\n");
 		msg.append("**Status:** FAIL\n\n");
 		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review report")).append("\n\n");
-		msg.append("**Details (Step-by-step):**\n").append(trimTo(trimmedDetails, 3000)).append("\n\n");
+		msg.append(trimTo(trimmedDetails, 6000)).append("\n\n");
 		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
 		return msg.toString();
 	}
