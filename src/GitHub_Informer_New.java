@@ -24,6 +24,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 public class GitHub_Informer_New {
 	public static void main(String args[]) {
+		if(args != null && args.length > 0 && "ai-review-markdown-test".equalsIgnoreCase(args[0]))
+		{
+			runAiReviewMarkdownTest();
+			return;
+		}
 		System.out.println("Calling Cliq...");
 		Integer MAX_MESSAGE_LENGTH = 4096;
 		String MESSAGE_BREAK = "\\n";
@@ -772,7 +777,6 @@ public class GitHub_Informer_New {
 				String pullRequestDiffUrlRaw = (String) System.getenv("PULL_REQUEST_DIFF_URL");
 				String pullRequestBaseShaRaw = (String) System.getenv("PULL_REQUEST_BASE_SHA");
 				String pullRequestHeadShaRaw = (String) System.getenv("PULL_REQUEST_HEAD_SHA");
-				String pullRequestBeforeShaRaw = (String) System.getenv("PULL_REQUEST_BEFORE_SHA");
 				String prLabelsRaw = (String) System.getenv("PR_LABELS");
 				// Previous storage mode was PR marker comments ("comment").
 				// Keep default as comment so existing behavior remains backward-compatible.
@@ -919,7 +923,6 @@ public class GitHub_Informer_New {
 						pullRequestDiffUrlRaw,
 						pullRequestBaseShaRaw,
 						pullRequestHeadShaRaw,
-						pullRequestBeforeShaRaw,
 						githubToken,
 						CliqChannelLink,
 						aiThreadId,
@@ -1060,7 +1063,7 @@ public class GitHub_Informer_New {
 
 	public static HttpResult postJson(String endpoint, String payload) throws IOException
 	{
-		debug("POST endpoint=" + redactSecrets(endpoint) + ", payloadPreview=" + preview(payload));
+		debug("POST endpoint=" + endpoint + ", payloadPreview=" + preview(payload));
 		HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
 		connection.setRequestMethod("POST");
 		connection.setRequestProperty("Content-Type", "application/json");
@@ -1090,7 +1093,7 @@ public class GitHub_Informer_New {
 
 	public static HttpResult sendHttpRequest(String method, String endpoint, String payload, Map<String, String> headers) throws IOException
 	{
-		debug(method + " endpoint=" + redactSecrets(endpoint) + ", payloadPreview=" + preview(payload));
+		debug(method + " endpoint=" + endpoint + ", payloadPreview=" + preview(payload));
 		String currentEndpoint = endpoint;
 		for(int redirectCount = 0; redirectCount < 5; redirectCount++)
 		{
@@ -1121,7 +1124,7 @@ public class GitHub_Informer_New {
 				if(location != null && !location.isBlank())
 				{
 					currentEndpoint = new URL(new URL(currentEndpoint), location).toString();
-					debug(method + " redirecting to=" + redactSecrets(currentEndpoint));
+					debug(method + " redirecting to=" + currentEndpoint);
 					continue;
 				}
 			}
@@ -1129,7 +1132,7 @@ public class GitHub_Informer_New {
 			debug(method + " response status=" + status + ", bodyPreview=" + preview(body));
 			return new HttpResult(status, body);
 		}
-		debug(method + " exceeded redirect limit for endpoint=" + redactSecrets(endpoint));
+		debug(method + " exceeded redirect limit for endpoint=" + endpoint);
 		return new HttpResult(500, "");
 	}
 
@@ -1855,175 +1858,22 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String pullRequestBeforeSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
+	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
 	{
-		String configFileName = resolveAiReviewConfigFileName();
-		String configFileLabel = configFileName.isBlank() ? "the AI review config file (none configured; set ai-review-config-file to enable this)" : configFileName;
-		AiReviewYamlConfig yamlConfig = readCliqConnectorYamlAiReviewConfig(defaultIfBlank(System.getenv("GITHUB_WORKSPACE"), "."));
-		debug(configFileLabel + " ai_review config: fileFound=" + yamlConfig.fileFound + ", blockFound=" + yamlConfig.blockFound + ", enabled=" + yamlConfig.enabled + ", service=" + yamlConfig.service + ", model=" + yamlConfig.model);
-
-		boolean aiReviewEnabled = isTrue(System.getenv("AI_REVIEW_ENABLED"));
-		if(yamlConfig.blockFound && yamlConfig.enabled != null)
-			aiReviewEnabled = yamlConfig.enabled.booleanValue();
-		if(!aiReviewEnabled)
+		if(!isTrue(System.getenv("AI_REVIEW_ENABLED")))
 			return;
 		if(prNumber == null || prNumber.isBlank())
 			return;
 
-		String aiToken = (String) System.getenv("AI_REVIEW_TOKEN");
-
-		// Req 4: AI review is enabled but no AI token was configured at all. Fail fast, before
-		// spending a diff-fetch cycle, with a clear PR comment and a failed check-run so the
-		// gate visibly blocks merge instead of silently no-op'ing.
-		if(aiToken == null || aiToken.isBlank())
-		{
-			String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-			String missingTokenSummary = "AI review is enabled but no AI token was provided";
-			String missingTokenDetails = "AI review is enabled (via " + configFileLabel + " or the ai-review-enabled input) but no AI token was found.\n\n"
-				+ "Set the `ai-review-token` input in your workflow, backed by a repository secret (for example `secrets.AI_REVIEW_TOKEN`), and rerun.";
-			debug("AI Review Gate: failing fast, AI_REVIEW_TOKEN is missing while AI review is enabled.");
-			if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
-				setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", missingTokenSummary, missingTokenDetails);
-			if(githubToken != null && !githubToken.isBlank())
-				postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, missingTokenSummary, missingTokenDetails));
-			return;
-		}
-
-		// Req: service must always be explicitly user-declared, either in the ai-review-config-file
-		// YAML (config file value wins when present) or via the ai-review-service plain workflow
-		// input (AI_REVIEW_SERVICE env var) for teams who want everything in one place without a
-		// second file. Never guessed and never defaulted otherwise. This covers both cases with one
-		// check: the block exists but `service` is missing/invalid inside it, AND no config file/
-		// ai_review block/plain input was ever provided at all. A declared service is still always
-		// required up front, even though the token can go on to override it below: it's the
-		// mandatory fallback for when the token's format is unrecognized (custom/self-hosted/
-		// enterprise keys), so we still fail fast here rather than defaulting to OpenAI.
-		String declaredService = normalizeAiService(yamlConfig.service);
-		if(declaredService.isBlank())
-			declaredService = normalizeAiService(System.getenv("AI_REVIEW_SERVICE"));
-		if(declaredService.isBlank())
-		{
-			String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-			String missingServiceSummary = yamlConfig.blockFound
-				? "AI review is enabled but no service was declared in " + configFileLabel
-				: "AI review is enabled but no service was declared";
-			String missingServiceDetails = yamlConfig.blockFound
-				? "The `ai_review` block in " + configFileLabel + " is missing a valid `service` value.\n\n"
-					+ "Set `service` to one of `openai`, `claude`, or `gemini` under `ai_review:` in " + configFileLabel + " and rerun."
-				: "Set the `ai-review-service` input to one of `openai`, `claude`, or `gemini` in your workflow file, "
-					+ "or set `ai-review-config-file` to point at a YAML file containing an `ai_review:` block with `service: openai|claude|gemini` (and optionally `model:`), then rerun.";
-			debug("AI Review Gate: failing fast, ai_review.service missing/invalid, no ai-review-service input, and no config file declared (" + configFileLabel + ").");
-			if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
-				setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", missingServiceSummary, missingServiceDetails);
-			if(githubToken != null && !githubToken.isBlank())
-				postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, missingServiceSummary, missingServiceDetails));
-			return;
-		}
-
-		// Req 3 (REVISED AGAIN): provider identity is now ALWAYS taken strictly from the DECLARED
-		// service (ai_review.service in the config file, or the ai-review-service input) for BOTH
-		// routing (URL + request/response payload shaping) AND the model. Token-shape sniffing
-		// (e.g. "AIza..." -> gemini, "sk-ant-..." -> claude) has been removed entirely: Google is
-		// transitioning Gemini/AI Studio keys away from the old "AIza" API-key format to newer
-		// "auth key" formats, so prefix-based guessing is no longer a reliable (or future-proof)
-        // way to identify a provider from its token shape, and would otherwise silently
-		// misclassify - or fail to classify - a perfectly valid Gemini key. There is deliberately
-		// no fallback guess-from-token path anymore: if the wrong service is declared for a given
-		// token, the provider's API will reject the request (typically 401/403) and that failure
-		// is surfaced as-is, which is clearer than a silent misroute based on a guessed prefix.
-		String effectiveService = declaredService;
-
-		// Model choice is tied to the same DECLARED service used for routing above - there is only
-		// one provider identity now, so there is no more risk of model and routing disagreeing.
-		// AI_REVIEW_MODEL env var is retained only as a secondary source for callers who prefer
-		// setting it via a plain workflow input rather than the config file - the config file
-		// value always wins.
-		String userConfiguredModel = defaultIfBlank(yamlConfig.model, defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), ""));
-		if(!userConfiguredModel.isBlank())
-		{
-			String modelValidationError = validateModelForProvider(declaredService, userConfiguredModel);
-			if(modelValidationError != null)
-			{
-				String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-				String invalidModelSummary = "Configured AI model does not match the declared service";
-				String invalidModelDetails = modelValidationError + "\n\nEither fix the `model` value in " + configFileLabel + " or remove it to automatically use the latest model for `service: " + declaredService + "`.";
-				debug("AI Review Gate: failing fast, " + modelValidationError);
-				if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
-					setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", invalidModelSummary, invalidModelDetails);
-				if(githubToken != null && !githubToken.isBlank())
-					postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, invalidModelSummary, invalidModelDetails));
-				return;
-			}
-		}
-		// effectiveService === declaredService now (no more token-based override), so the default
-		// model picked here always belongs to the same provider that will actually handle the HTTP
-		// call. When the user DID give an explicit model, it was already validated against
-		// declaredService above and is passed through completely unchanged here.
-		String resolvedModel = resolveModelForProvider(declaredService, userConfiguredModel);
-
-		// Pre-flight credential probe: makes one minimal, cheap call to the DECLARED provider's
-		// API before spending a diff-fetch + full-review cycle on a token that will just be
-		// rejected downstream anyway. This intentionally does NOT try to validate the token by
-		// shape/prefix (see the removed guessProviderFromToken note above for why that is no
-		// longer reliable, e.g. Gemini's AIza -> auth-key transition) - instead it asks the real
-		// provider API whether aiToken is actually valid FOR declaredService, which is the only
-		// future-proof way to catch a token/service mismatch early. A failure here fails fast with
-        // a clear, specific PR comment/check-run instead of a vague error surfacing much later out
-        // of the full review call.
-		PreflightResult preflightResult = preflightVerifyAiCredentials(declaredService, resolveApiUrlForProvider(declaredService, System.getenv("AI_REVIEW_API_URL")), aiToken, resolvedModel);
-		if(preflightResult.errorMessage != null)
-		{
-			String checkNameEarly = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-			boolean modelProblem = preflightResult.modelNotFound;
-			String badTokenSummary = modelProblem
-				? "Model `" + resolvedModel + "` is not supported by " + declaredService
-				: "AI review token was rejected by " + declaredService;
-			String badTokenDetails = "A pre-flight check against " + declaredService + " failed before running the full review.\n\n"
-				+ preflightResult.errorMessage + "\n\n"
-				+ (modelProblem
-					? "Update `ai-review-model` to a model name that is currently supported by `ai-review-service: " + declaredService + "`, then re-run the review."
-					: "Verify that `ai-review-token` is a valid, active key that actually belongs to `ai-review-service: " + declaredService + "`, and that it has access to model `" + resolvedModel + "`.");
-			debug("AI Review Gate: failing fast, pre-flight check failed for declaredService=" + declaredService + ": " + preflightResult.errorMessage);
-			if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
-				setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkNameEarly, "failure", badTokenSummary, badTokenDetails);
-			if(githubToken != null && !githubToken.isBlank())
-				postPullRequestComment(repository, prNumber, githubToken, buildAiFailureMessage(prNumber, pullRequestUrl, badTokenSummary, badTokenDetails));
-			return;
-		}
-
 		String triggerMode = defaultIfBlank(System.getenv("AI_REVIEW_TRIGGER"), "auto").trim().toLowerCase();
 		boolean runOnSync = isTrue(defaultIfBlank(System.getenv("AI_REVIEW_ON_SYNC"), "true"));
-		boolean incrementalOnSync = isTrue(defaultIfBlank(System.getenv("AI_REVIEW_INCREMENTAL_ON_SYNC"), "true"));
 		String triggerLabel = defaultIfBlank(System.getenv("AI_REVIEW_LABEL"), "");
-		String fullReviewLabel = defaultIfBlank(System.getenv("AI_REVIEW_FULL_LABEL"), "").trim();
 
-		if(!shouldRunAiReviewForEvent(triggerMode, triggerLabel, runOnSync, eventNameRaw, actionRaw, prLabelsRaw, fullReviewLabel))
+		if(!shouldRunAiReviewForEvent(triggerMode, triggerLabel, runOnSync, eventNameRaw, actionRaw, prLabelsRaw))
 			return;
 
-		// The "ready for merge" safety-net gate: when this run was triggered specifically by
-		// applying the full-review label, always do a full base...head review regardless of
-		// incremental settings, so any issue introduced earlier in the PR (and not re-flagged
-		// by incremental per-push reviews) is still caught once before merge.
-		boolean isFullReviewLabelEvent = "labeled".equals(actionRaw) && !fullReviewLabel.isBlank()
-			&& hasLabel(prLabelsRaw, fullReviewLabel);
-
-		// Only treat this as an incremental (delta-only) review when it is genuinely a
-		// "synchronize" push to an already-open PR AND we have a usable previous head SHA.
-		// GitHub sends a real commit SHA in event.before for a normal fast-forward push, but
-		// sends the all-zero SHA (or omits it) for the very first synchronize after certain
-		// edge cases (e.g. base branch changed) - in those cases there is nothing sensible to
-		// diff against incrementally, so we deliberately fall back to the full base...head diff.
-		boolean isSynchronizeEvent = "synchronize".equals(actionRaw);
-		boolean hasUsablePreviousHead = pullRequestBeforeSha != null && !pullRequestBeforeSha.isBlank()
-			&& !pullRequestBeforeSha.matches("0+");
-		String incrementalBaseSha = (incrementalOnSync && isSynchronizeEvent && hasUsablePreviousHead && !isFullReviewLabelEvent)
-			? pullRequestBeforeSha
-			: null;
-
 		String checkName = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
-		if(isFullReviewLabelEvent)
-			debug("AI Review Gate: '" + fullReviewLabel + "' label applied - running full base...head review as pre-merge safety net.");
-		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, incrementalBaseSha, githubToken, effectiveService, resolvedModel);
+		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
 
 		if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 		{
@@ -2034,48 +1884,26 @@ public class GitHub_Informer_New {
 			System.err.println("AI review check run skipped: missing github token or PR head sha.");
 		}
 
-		// Always upsert the PR comment - pass or fail - so it stays a live, current report of the
-		// latest changed files, findings, file names, and line numbers. Previously this only ran on
-		// failure, which meant a PASSING re-review after a fix left the old "AI Review Failed"
-		// comment stale and misleading (or left the PR with no comment at all on the first pass).
-		String reviewMessage = decision.passed
-			? buildAiSuccessMessage(prNumber, pullRequestUrl, decision.summary, decision.details)
-			: buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
-		boolean prCommentPosted = false;
-		if(githubToken != null && !githubToken.isBlank())
-		{
-			postPullRequestComment(repository, prNumber, githubToken, reviewMessage);
-			prCommentPosted = true;
-		}
-		else
-		{
-			System.err.println("AI review PR comment skipped: missing github token.");
-		}
-
 		if(!decision.passed)
 		{
-			int cliqSummaryLength = parseIntOrDefault(System.getenv("AI_REVIEW_CLIQ_SUMMARY_LENGTH"), 300);
-			String actionsRunUrl = buildActionsRunUrl(repository);
-			String cliqNotification = buildAiFailureCliqNotification(prNumber, pullRequestUrl, decision.summary, prCommentPosted, cliqSummaryLength, actionsRunUrl);
-			postAiFailureToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, cliqNotification);
+			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
+			if(githubToken != null && !githubToken.isBlank())
+			{
+				postPullRequestComment(repository, prNumber, githubToken, failureMessage);
+			}
+			else
+			{
+				System.err.println("AI review failure PR comment skipped: missing github token.");
+			}
+
+			postAiFailureToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, failureMessage);
 		}
 	}
 
 	public static boolean shouldRunAiReviewForEvent(String triggerMode, String triggerLabel, boolean runOnSync, String eventNameRaw, String actionRaw, String prLabelsRaw)
 	{
-		return shouldRunAiReviewForEvent(triggerMode, triggerLabel, runOnSync, eventNameRaw, actionRaw, prLabelsRaw, "");
-	}
-
-	public static boolean shouldRunAiReviewForEvent(String triggerMode, String triggerLabel, boolean runOnSync, String eventNameRaw, String actionRaw, String prLabelsRaw, String fullReviewLabel)
-	{
 		if(!"pull_request".equals(eventNameRaw) && !"pull_request_target".equals(eventNameRaw))
 			return false;
-
-		// The "ready for merge" full-review gate is independent of trigger mode: whenever this
-		// exact label is freshly applied to the PR, always run the review (it is an explicit,
-		// human-initiated request for a final pre-merge check), regardless of auto/label mode.
-		if("labeled".equals(actionRaw) && fullReviewLabel != null && !fullReviewLabel.isBlank() && hasLabel(prLabelsRaw, fullReviewLabel))
-			return true;
 
 		if("auto".equals(triggerMode))
 		{
@@ -2112,9 +1940,10 @@ public class GitHub_Informer_New {
 		return false;
 	}
 
-	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String incrementalBaseSha, String githubToken, String resolvedProvider, String resolvedModel)
+	public static AiReviewDecision evaluateAiReviewDecision(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
 	{
 		String aiToken = (String) System.getenv("AI_REVIEW_TOKEN");
+		String modelFromEnv = defaultIfBlank(System.getenv("AI_REVIEW_MODEL"), "");
 		String apiUrlFromEnv = defaultIfBlank(System.getenv("AI_REVIEW_API_URL"), "");
 
 		if(aiToken == null || aiToken.isBlank())
@@ -2122,112 +1951,21 @@ public class GitHub_Informer_New {
 		if(githubToken == null || githubToken.isBlank())
 			return new AiReviewDecision(false, "AI Review Gate failed", "GITHUB_TOKEN is missing.");
 
-		// When an incremental base is available (synchronize event with a usable previous head),
-		// diff previousHead...head so only the newly pushed commits are reviewed, instead of the
-		// full base...head diff which would re-flag issues from every prior commit on the PR.
-		boolean isIncremental = incrementalBaseSha != null && !incrementalBaseSha.isBlank();
-		String diffBaseSha = isIncremental ? incrementalBaseSha : pullRequestBaseSha;
-
-		DiffFetchResult diffResult = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, diffBaseSha, pullRequestHeadSha, githubToken, isIncremental);
-		if((diffResult.diff == null || diffResult.diff.isBlank()) && isIncremental)
-		{
-			// The incremental range came back empty (e.g. the "before" SHA is not an ancestor
-			// reachable via the compare API, or the previous head was already identical to a
-			// point on the new history - can happen after a rebase/force-push edge case that
-			// still produced a real, non-zero before SHA). Fall back to the full PR diff rather
-			// than silently reporting "no changes" when the PR clearly has content.
-			debug("Incremental diff (before=" + trimTo(defaultIfBlank(incrementalBaseSha, "?"), 12) + " head=" + trimTo(defaultIfBlank(pullRequestHeadSha, "?"), 12) + ") was empty. Falling back to full base...head diff.");
-			isIncremental = false;
-			diffBaseSha = pullRequestBaseSha;
-			diffResult = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, diffBaseSha, pullRequestHeadSha, githubToken, false);
-		}
-		if(diffResult.diff == null || diffResult.diff.isBlank())
-		{
-			if(diffResult.confirmedNoChangedFiles)
-				return new AiReviewDecision(true, "success", "AI review skipped: no file changes detected", "GitHub confirmed zero changed files between base " + trimTo(defaultIfBlank(diffBaseSha, "?"), 12) + " and head " + trimTo(defaultIfBlank(pullRequestHeadSha, "?"), 12) + ". Nothing to review.");
+		String diff = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
+		if(diff == null || diff.isBlank())
 			return new AiReviewDecision(false, "failure", "AI Review Gate failed", "Unable to fetch PR diff from GitHub after retries. Failing AI review in strict mode.");
-		}
-		String diff = diffResult.diff;
 
-		// Deterministic safety net #0 (UNREVIEWABLE FILES): must run before any other check and
-		// before the diff is handed to the AI. When GitHub cannot provide a textual patch for a
-		// changed file (binary detection, per-file patch size cap, etc.), the diff-synthesis path
-		// embeds a "[UNREVIEWABLE: ...]" marker for that file instead of its real content. That
-		// marker is only a prompt instruction telling the AI "don't fabricate findings for this
-        // file" - it must never be allowed to fall through as an implicit pass, since neither the
-        // static regex checks nor the AI ever actually see the file's real content in that case.
-        // A security gate must fail closed (require manual review) rather than fail open (assume
-        // the invisible content is safe) whenever any file could not actually be reviewed.
-		String unreviewableFindings = findUnreviewableFiles(diff);
-		if(unreviewableFindings != null && !unreviewableFindings.isBlank())
-			return new AiReviewDecision(false, "AI Review Gate failed", "One or more changed files could not be reviewed (no diff content was available). Failing closed instead of assuming they are safe.", unreviewableFindings);
-
-		// Deterministic safety net #1 (REMOVALS): must run on the RAW diff, BEFORE '-' lines are
-		// stripped below. A PR that deletes a security control (an auth/permission check, input
-		// sanitization, validation, encoding, a try/catch guarding a sensitive call, etc.) without
-		// adding an equivalent replacement shows up ONLY as '-' lines with no corresponding '+'
-		// line. Since the addition-side checks and the AI system prompt both intentionally only
-		// ever see '+' lines (to stop the AI hallucinating issues on deleted code), a pure-deletion
-		// regression like this would otherwise be structurally invisible to every reviewer in the
-		// pipeline and would always pass. This check closes that blind spot independently of the
-		// addition-side checks and independently of the AI verdict.
-		String removalFindings = runRemovalSecurityChecks(diff);
-		if(removalFindings != null && !removalFindings.isBlank())
-			return new AiReviewDecision(false, "AI Review Gate failed", "Static security check found blocking issues in removed code (independent of AI verdict).", removalFindings);
-
-		// Strip removed ('-') lines from the diff before it is ever sent to the AI. The system
-		// prompt already instructs the model to ignore '-' lines, but LLMs are not 100% reliable
-		// at honoring unified-diff +/- semantics packed into an escaped JSON string, and have been
-		// observed flagging code that only exists on a removal line (i.e. code that was DELETED by
-		// this PR, not code that is actually present after the change). Removing that content at
-		// the data layer makes it structurally impossible for the AI to cite a removed line as an
-		// outstanding issue, instead of relying solely on prompt instructions. This is applied only
-		// here (after fetch/retry/staleness-check logic has already consumed the raw diff) so the
-		// stale-diff detection above, which only inspects "diff --git" headers, is unaffected.
-		String sanitizedDiff = stripRemovedLinesFromDiff(diff);
-
-		// Deterministic safety net #2 (ADDITIONS): certain classes of vulnerability (hardcoded
-		// secrets, obvious DOM-based XSS sinks) must never depend solely on an LLM correctly
-		// noticing them inside files it has been told to treat leniently (e.g. plain HTML/static
-		// content). This scan runs on the ADDED lines only (sanitizedDiff already has '-' lines
-		// stripped) and fails the gate immediately on a match, independent of what the AI provider
-		// returns.
-		String staticFindings = runStaticSecurityChecks(sanitizedDiff);
-		if(staticFindings != null && !staticFindings.isBlank())
-			return new AiReviewDecision(false, "AI Review Gate failed", "Static security check found blocking issues (independent of AI verdict).", staticFindings);
-
-		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, sanitizedDiff, isIncremental);
-		// resolvedProvider is the EFFECTIVE service by the time we reach this point: the mandatory,
-		// gate-checked declared service (ai_review.service in the YAML config file, or the
-		// ai-review-service input) UNLESS the ai-review-token's prefix confidently identifies a
-		// different known provider, in which case the caller (handleAiReviewGate) already
-		// overrode it to the token's provider so URL/payload-shaping/model all stay consistent
-		// with each other. Either way this is one of exactly "openai", "claude", "gemini" - no
-		// guessing/defaulting here: if this is ever somehow blank, fail loudly rather than
-		// silently defaulting to a provider.
-		String provider = normalizeAiService(resolvedProvider);
-		if(provider.isBlank())
-			return new AiReviewDecision(false, "AI Review Gate failed", "No valid AI service (openai, claude, or gemini) was resolved before invoking the AI provider.");
-		// IMPORTANT: resolvedModel here is ALREADY fully resolved by the caller (handleAiReviewGate)
-		// against the user's DECLARED service, not this token-driven "provider" - do not re-run it
-		// through resolveModelForProvider(provider, ...) here, since that would silently swap in a
-		// different provider's default model (or re-validate against the wrong provider) whenever
-        // the token overrides routing. The model the user configured/was given must stay exactly
-        // as resolved upstream regardless of which provider ends up handling the HTTP call.
-		String model = resolvedModel;
+		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff);
+		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
+		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. "
-			+ "DIFF FORMAT RULES (critical, read carefully): The diff uses unified diff format with all REMOVED ('-') lines already stripped out before reaching you \u2014 every line you see is either a file/hunk header (\"diff --git\", \"index\", \"--- a/...\", \"+++ b/...\", \"@@ ... @@\", mode/rename metadata), a line starting with '+' that was ADDED and represents the CURRENT/NEW state of the code, or an unchanged context line. There are no removed lines present in this diff at all, so you must NEVER assume, infer, or hallucinate the existence or content of code that is not literally shown to you. Evaluate the code quality, security, and correctness of ONLY the '+' lines and unchanged context lines that are actually present. If the diff for a file contains no '+' lines (for example only header/hunk lines remain because the only changes in that file were deletions), that means the net effect was a removal with no new code introduced \u2014 do not fabricate an issue for it. Before citing any FILE/LINE/ISSUE, double-check that the exact offending code you are citing is literally present as a '+' or unchanged context line in the diff shown to you. "
-			+ "PR TITLE/DESCRIPTION AS EVIDENCE FOR REMOVALS (read carefully): You are given the PR Title and PR Description above the diff. When a hunk's net effect is a removal with little or no replacement '+' content (for example a deleted script tag, config entry, function, or check), you would otherwise have no way to distinguish an intentional, safe cleanup from an accidental or breaking regression, since the removed lines themselves are stripped from the diff you see. In that specific situation, treat the PR Title and PR Description as authoritative evidence of intent: if either one explicitly names or clearly describes the removed element (e.g. by file, tag, function, or purpose) and states or clearly implies why removing it is safe (for example: unused, dead code, deprecated, superseded, no longer referenced, intentionally deleted), do NOT fail the review solely for lacking a replacement or explanation for that removal, and do not raise a 'removed without explanation' style issue for it. Only fail such a removal when: (a) the title and description are both blank, generic, or say nothing about the removed element at all, or (b) the title/description's stated intent clearly contradicts or is unrelated to the actual removal shown in the diff (for example the title claims an unrelated fix such as a typo while the diff shows an unrelated deletion of security- or credential-adjacent code), in which case explain the mismatch explicitly in the ISSUE text. A generic or unrelated title/description must never be treated as sufficient justification on its own. "
-			+ "Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. These validation/error-handling/test requirements apply only to files that contain executable logic (for example JavaScript, TypeScript, Java, Python, form submission handlers, or API calls). Do not require validation, error handling, or test coverage for static content changes such as plain HTML markup, CSS-only changes, Markdown, documentation, or JSON/YAML configuration files that do not introduce new logic; review those only for correctness, broken links or references, and security concerns actually present in the diff. If a file has no applicable issues, do not fabricate a finding for it, and do not penalize the PR for lacking tests or validation that would not make sense for the type of file changed. When every changed file is free of genuine issues, respond with RESULT: PASS and a DETAILS list stating there were no issues found. When the provided diff is explicitly marked as an incremental review (only the most recently pushed commits, not the full pull request), judge ONLY the changes present in that diff: do not fail the review for missing tests, validation, or fixes that would only make sense to evaluate against the full cumulative PR, and do not re-raise issues that are not present in the given incremental diff.";
+		String systemPrompt = "You are a strict PR reviewer. Respond with plain text only using this exact structure: RESULT: PASS or FAIL, SUMMARY: one short line, DETAILS: numbered points (1., 2., 3.). For each detail point include: FILE: <path>, LINE: <line number>, ISSUE: <what is wrong>, FIX: <what to change>. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic.";
 
 		try
 		{
 			HttpResult aiResponse = invokeAiProvider(provider, apiUrl, aiToken, model, systemPrompt, userPrompt);
 			if(aiResponse.status < 200 || aiResponse.status > 299)
-				return new AiReviewDecision(false, "failure", "AI Review Gate failed",
-					provider + " request failed with status " + aiResponse.status + ". Response: "
-						+ trimTo(defaultIfBlank(aiResponse.body, "(no response body)"), 1500));
+				return new AiReviewDecision(false, "AI Review Gate failed", provider + " request failed with status " + aiResponse.status + ".");
 
 			String content = extractAiContent(aiResponse.body, provider);
 			if(content == null || content.isBlank())
@@ -2252,517 +1990,37 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	// Deterministic, regex-based pre-check applied to the ADDED lines of a PR diff, run BEFORE
-	// and INDEPENDENTLY of the AI provider call. This exists because the AI system prompt
-	// intentionally relaxes scrutiny for "static content" files (plain HTML/CSS/Markdown/JSON/
-	// YAML) so it doesn't demand tests/validation for markup-only changes - but that same leniency
-	// can cause an LLM to under-scrutinize executable <script> blocks embedded inside an .html
-	// file, or to miss an obvious hardcoded secret because "it's just a config file". These
-	// checks intentionally do NOT depend on file extension: they scan every added line in the
-	// diff, in every changed file, so a vulnerability cannot escape review just because it lives
-	// inside a file type the AI has been told to treat leniently. Keep this list small and high-
-	// confidence (few false positives) since a match hard-fails the gate with no AI involved.
-	public static final class StaticSecurityRule
+	public static String detectAiProvider(String token, String apiUrl)
 	{
-		public final String id;
-		public final Pattern pattern;
-		public final String issue;
-		public final String fix;
-		public StaticSecurityRule(String id, String regex, String issue, String fix)
-		{
-			this.id = id;
-			this.pattern = Pattern.compile(regex);
-			this.issue = issue;
-			this.fix = fix;
-		}
+		String url = defaultIfBlank(apiUrl, "").toLowerCase();
+		if(url.contains("anthropic"))
+			return "claude";
+		if(url.contains("generativelanguage.googleapis.com") || url.contains("gemini"))
+			return "gemini";
+		if(url.contains("openai"))
+			return "openai";
+
+		String normalizedToken = defaultIfBlank(token, "").trim();
+		if(normalizedToken.startsWith("sk-ant-"))
+			return "claude";
+		if(normalizedToken.startsWith("AIza"))
+			return "gemini";
+		if(normalizedToken.startsWith("sk-"))
+			return "openai";
+
+		// Default to OpenAI-compatible for unknown token patterns.
+		return "openai";
 	}
 
-	private static final ArrayList<StaticSecurityRule> STATIC_SECURITY_RULES = buildStaticSecurityRules();
-
-	private static ArrayList<StaticSecurityRule> buildStaticSecurityRules()
-	{
-		ArrayList<StaticSecurityRule> rules = new ArrayList<StaticSecurityRule>();
-		rules.add(new StaticSecurityRule(
-			"DOM_XSS_SINK",
-			"(?i)\\.(?:innerHTML|outerHTML)\\s*=\\s*(?!\\s*[\"'`]\\s*[\"'`]\\s*;)(?:.*\\b(?:location\\.(?:hash|search|href)|document\\.URL|document\\.referrer|window\\.name|URLSearchParams)\\b)",
-			"Untrusted, attacker-controllable input (URL hash/search/referrer/window.name) is written directly into innerHTML/outerHTML without sanitization or encoding, creating a DOM-based XSS sink.",
-			"Never assign untrusted input directly to innerHTML/outerHTML. Use textContent for plain text, or sanitize with a library such as DOMPurify before insertion."
-		));
-		rules.add(new StaticSecurityRule(
-			"HARDCODED_SECRET",
-			"(?i)\\b(?:api[_-]?key|secret|token|password|passwd|access[_-]?key|auth[_-]?token)\\b\\s*[:=]\\s*[\"'`](?:sk-|ghp_|xox[baprs]-|AIza|AKIA|glpat-)[A-Za-z0-9_\\-]{6,}[\"'`]",
-			"A hardcoded credential/API key/secret literal was added directly in source.",
-			"Remove the hardcoded secret and load it from a secret manager or environment variable (e.g. repository/organization secret) instead."
-		));
-		rules.add(new StaticSecurityRule(
-			"EVAL_USAGE",
-			"(?i)\\beval\\s*\\(|\\bnew\\s+Function\\s*\\(",
-			"Use of eval()/new Function() on potentially dynamic input enables arbitrary code execution.",
-			"Avoid eval/new Function entirely; use JSON.parse for data or a safe, explicit code path instead of dynamic evaluation."
-		));
-		return rules;
-	}
-
-	// Scans only '+' (added) lines of a unified diff (the '-' lines are expected to already be
-	// stripped by the caller via stripRemovedLinesFromDiff). Returns a formatted DETAILS-style
-	// findings string (same shape the AI would produce) or null/blank when nothing matched.
-	public static String runStaticSecurityChecks(String sanitizedDiff)
-	{
-		if(sanitizedDiff == null || sanitizedDiff.isBlank())
-			return null;
-
-		String currentFile = "(unknown file)";
-		int lineNumberInNewFile = 0;
-		boolean haveLineNumber = false;
-		ArrayList<String> findings = new ArrayList<String>();
-		Pattern fileHeaderPattern = Pattern.compile("^\\+\\+\\+ b/(.*)$");
-		Pattern hunkHeaderPattern = Pattern.compile("^@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@");
-
-		for(String rawLine : sanitizedDiff.split("\n", -1))
-		{
-			Matcher fileMatcher = fileHeaderPattern.matcher(rawLine);
-			if(fileMatcher.matches())
-			{
-				currentFile = fileMatcher.group(1);
-				haveLineNumber = false;
-				continue;
-			}
-			Matcher hunkMatcher = hunkHeaderPattern.matcher(rawLine);
-			if(hunkMatcher.find())
-			{
-				lineNumberInNewFile = Integer.parseInt(hunkMatcher.group(1));
-				haveLineNumber = true;
-				continue;
-			}
-			if(rawLine.startsWith("+++") || rawLine.startsWith("---") || rawLine.startsWith("diff --git") || rawLine.startsWith("index "))
-				continue;
-			if(!rawLine.startsWith("+"))
-				continue;
-
-			String addedContent = rawLine.substring(1);
-			for(StaticSecurityRule rule : STATIC_SECURITY_RULES)
-			{
-				if(rule.pattern.matcher(addedContent).find())
-				{
-					String lineRef = haveLineNumber ? String.valueOf(lineNumberInNewFile) : "n/a";
-					findings.add("FILE: " + currentFile + ", LINE: " + lineRef + ", ISSUE: [" + rule.id + "] " + rule.issue + ", FIX: " + rule.fix);
-				}
-			}
-			if(haveLineNumber)
-				lineNumberInNewFile++;
-		}
-
-		if(findings.isEmpty())
-			return null;
-
-		StringBuilder details = new StringBuilder();
-		for(int i = 0; i < findings.size(); i++)
-			details.append(i + 1).append(". ").append(findings.get(i)).append("\n");
-		return details.toString().trim();
-	}
-
-	// Deterministic, regex-based pre-check applied to the REMOVED ('-') lines of a PR's RAW diff,
-	// run BEFORE stripRemovedLinesFromDiff() ever deletes that content, and BEFORE and INDEPENDENTLY
-	// of the AI provider call. This exists because deleting a security control (an auth/permission
-	// check, input validation, sanitization/encoding call, a try/catch guarding a sensitive
-	// operation, a rate limiter, etc.) without adding a replacement produces a diff made up
-	// entirely of '-' lines with no corresponding '+' line for that control. Every other check in
-	// this pipeline (runStaticSecurityChecks, and the AI itself via its system prompt) deliberately
-	// only looks at '+' lines, on purpose, to stop the AI hallucinating issues on code that no
-	// longer exists - but that same design choice makes a pure-deletion regression structurally
-	// invisible unless something explicitly looks at what was removed. Keep this list small and
-	// high-confidence (few false positives) since a match hard-fails the gate with no AI involved.
-	public static final class RemovalSecurityRule
-	{
-		public final String id;
-		public final Pattern pattern;
-		public final String issue;
-		public final String fix;
-		public RemovalSecurityRule(String id, String regex, String issue, String fix)
-		{
-			this.id = id;
-			this.pattern = Pattern.compile(regex);
-			this.issue = issue;
-			this.fix = fix;
-		}
-	}
-
-	private static final ArrayList<RemovalSecurityRule> REMOVAL_SECURITY_RULES = buildRemovalSecurityRules();
-
-	private static ArrayList<RemovalSecurityRule> buildRemovalSecurityRules()
-	{
-		ArrayList<RemovalSecurityRule> rules = new ArrayList<RemovalSecurityRule>();
-		rules.add(new RemovalSecurityRule(
-			"AUTH_CHECK_REMOVED",
-			"(?i)\\b(?:if\\s*\\(.*\\b(?:is)?(?:authenticated|authorized|logged[_-]?in|has(?:Role|Permission|Access)|can(?:Access|Edit|Delete|View)|require(?:Auth|Login|Role|Permission))\\b.*\\)|@(?:PreAuthorize|Secured|RolesAllowed|login_required|permission_required|IsAuthenticated)\\b)",
-			"An authentication/authorization/permission check was removed without an equivalent replacement.",
-			"Restore the removed auth/permission check, or confirm and document why access control is no longer required for this code path before merging."
-		));
-		rules.add(new RemovalSecurityRule(
-			"SANITIZATION_REMOVED",
-			"(?i)\\b(?:DOMPurify\\.sanitize|escapeHtml|encodeURIComponent|encodeURI|htmlspecialchars|sanitize(?:Input|Html|Output|Url)?|StringEscapeUtils\\.\\w+|bleach\\.clean|Jsoup\\.clean)\\s*\\(",
-			"A call that sanitized/escaped/encoded untrusted input or output was removed without an equivalent replacement.",
-			"Restore equivalent sanitization/encoding at this point, or verify the input is validated/trusted through another mechanism before merging."
-		));
-		rules.add(new RemovalSecurityRule(
-			"VALIDATION_REMOVED",
-			"(?i)\\b(?:if\\s*\\(\\s*!?\\s*(?:is)?Valid|validate(?:Input|Request|Params|Payload|User|Email|Token)?\\s*\\(|assert(?:NotNull|True|False)?\\s*\\(.*\\b(?:input|param|request|token|user)\\b)",
-			"Input validation logic was removed without an equivalent replacement.",
-			"Restore equivalent input validation, or confirm the input is now validated upstream before merging."
-		));
-		rules.add(new RemovalSecurityRule(
-			"CRYPTO_OR_SECRET_CHECK_REMOVED",
-			"(?i)\\b(?:verify(?:Signature|Token|Hmac|Jwt)|MessageDigest\\.isEqual|hash_equals|constant_?time_?compare|checkSignature)\\s*\\(",
-			"A cryptographic verification / signature / token comparison check was removed without an equivalent replacement.",
-			"Restore the removed verification step, or confirm the trust boundary is still enforced elsewhere before merging."
-		));
-		return rules;
-	}
-
-	// Detects the "[UNREVIEWABLE: ...]" marker that synthesizeUnifiedDiffFromFilesResponse()
-	// embeds in place of a file's real content when GitHub's files API returned no "patch" field
-	// for that file (binary detection, per-file patch size cap, etc.). The marker text itself
-	// always names the affected FILE, so it is parsed back out here to produce a normal
-	// DETAILS-style findings string that hard-fails the gate instead of silently passing.
-	private static final Pattern UNREVIEWABLE_FILE_PATTERN = Pattern.compile("\\[UNREVIEWABLE: [^\\]]*?FILE: ([^,\\]]+)");
-
-	public static String findUnreviewableFiles(String diff)
-	{
-		if(diff == null || diff.isBlank())
-			return null;
-		Matcher matcher = UNREVIEWABLE_FILE_PATTERN.matcher(diff);
-		ArrayList<String> files = new ArrayList<String>();
-		while(matcher.find())
-		{
-			String fileName = matcher.group(1) == null ? "" : matcher.group(1).trim();
-			if(!fileName.isEmpty() && !files.contains(fileName))
-				files.add(fileName);
-		}
-		if(files.isEmpty())
-			return null;
-		StringBuilder sb = new StringBuilder();
-		int i = 0;
-		for(String fileName : files)
-		{
-			i++;
-			sb.append(i).append(". FILE: ").append(fileName)
-				.append(", LINE: n/a, ISSUE: GitHub did not return diff content for this file (binary detection or per-file patch size limit), so it could not be scanned by static checks or the AI, FIX: review this file manually before merging; do not assume it is safe.\n");
-		}
-		return sb.toString();
-	}
-
-	// Scans only '-' (removed) lines of the RAW unified diff (must be called BEFORE
-	// stripRemovedLinesFromDiff() strips them out). Returns a formatted DETAILS-style findings
-	// string (same shape the AI/addition-side checker would produce) or null/blank when nothing
-	// matched. Line numbers for pure removals are reported against the OLD file (the "-" side of
-	// the hunk header), since a purely deleted line has no position in the new file.
-	public static String runRemovalSecurityChecks(String rawDiff)
-	{
-		if(rawDiff == null || rawDiff.isBlank())
-			return null;
-
-		String currentFile = "(unknown file)";
-		int lineNumberInOldFile = 0;
-		boolean haveLineNumber = false;
-		ArrayList<String> findings = new ArrayList<String>();
-		Pattern fileHeaderPattern = Pattern.compile("^--- a/(.*)$");
-		Pattern altFileHeaderPattern = Pattern.compile("^\\+\\+\\+ b/(.*)$");
-		Pattern hunkHeaderPattern = Pattern.compile("^@@ -(\\d+)(?:,\\d+)? \\+\\d+(?:,\\d+)? @@");
-
-		String lastSeenFileFromMinus = null;
-		for(String rawLine : rawDiff.split("\n", -1))
-		{
-			Matcher minusFileMatcher = fileHeaderPattern.matcher(rawLine);
-			if(minusFileMatcher.matches())
-			{
-				String candidate = minusFileMatcher.group(1);
-				if(!"/dev/null".equals(candidate))
-					lastSeenFileFromMinus = candidate;
-				continue;
-			}
-			Matcher plusFileMatcher = altFileHeaderPattern.matcher(rawLine);
-			if(plusFileMatcher.matches())
-			{
-				String candidate = plusFileMatcher.group(1);
-				currentFile = !"/dev/null".equals(candidate) ? candidate : defaultIfBlank(lastSeenFileFromMinus, currentFile);
-				haveLineNumber = false;
-				continue;
-			}
-			Matcher hunkMatcher = hunkHeaderPattern.matcher(rawLine);
-			if(hunkMatcher.find())
-			{
-				lineNumberInOldFile = Integer.parseInt(hunkMatcher.group(1));
-				haveLineNumber = true;
-				continue;
-			}
-			boolean isFileHeaderLine = rawLine.startsWith("diff --git ")
-				|| rawLine.startsWith("index ")
-				|| rawLine.startsWith("new file mode")
-				|| rawLine.startsWith("deleted file mode")
-				|| rawLine.startsWith("old mode")
-				|| rawLine.startsWith("new mode")
-				|| rawLine.startsWith("similarity index")
-				|| rawLine.startsWith("rename from")
-				|| rawLine.startsWith("rename to")
-				|| rawLine.startsWith("Binary files ");
-			if(isFileHeaderLine)
-				continue;
-
-			if(rawLine.startsWith("+"))
-				continue; // additions handled by runStaticSecurityChecks; not relevant here
-			if(!rawLine.startsWith("-"))
-			{
-				if(haveLineNumber)
-					lineNumberInOldFile++; // unchanged context line advances the old-file counter too
-				continue;
-			}
-
-			String removedContent = rawLine.substring(1);
-			for(RemovalSecurityRule rule : REMOVAL_SECURITY_RULES)
-			{
-				if(rule.pattern.matcher(removedContent).find())
-				{
-					String lineRef = haveLineNumber ? String.valueOf(lineNumberInOldFile) : "n/a";
-					findings.add("FILE: " + currentFile + ", LINE: " + lineRef + " (removed), ISSUE: [" + rule.id + "] " + rule.issue + ", FIX: " + rule.fix);
-				}
-			}
-			if(haveLineNumber)
-				lineNumberInOldFile++;
-		}
-
-		if(findings.isEmpty())
-			return null;
-
-		StringBuilder details = new StringBuilder();
-		for(int i = 0; i < findings.size(); i++)
-			details.append(i + 1).append(". ").append(findings.get(i)).append("\n");
-		return details.toString().trim();
-	}
-
-	// Holds the parsed `ai_review:` block from the user-configured AI review config file (see
-	// "ai-review-config-file" input / resolveAiReviewConfigFileName()), if present. This is a
-	// deliberately minimal, hand-rolled reader (no external YAML library is available in this
-	// single-file, dependency-free program) scoped ONLY to the small fixed schema documented in
-	// the README:
-	//   ai_review:
-	//     enabled: true
-	//     service: openai   # openai | claude | gemini
-	//     model: gpt-4.1-mini   # optional
-	public static class AiReviewYamlConfig
-	{
-		public boolean fileFound;
-		public boolean blockFound;
-		public Boolean enabled;
-		public String service;
-		public String model;
-
-		public AiReviewYamlConfig(boolean fileFound, boolean blockFound, Boolean enabled, String service, String model)
-		{
-			this.fileFound = fileFound;
-			this.blockFound = blockFound;
-			this.enabled = enabled;
-			this.service = service;
-			this.model = model;
-		}
-	}
-
-	// There is NO default/assumed file name here on purpose. This action must not push users
-	// toward naming any file a particular way - a GitHub Actions workflow file already triggers
-	// correctly under any user-chosen name (e.g. .github/workflows/my-ci.yml), and the optional
-	// AI-review config file follows the same principle: it is only ever read when the caller
-	// explicitly opts in via the "ai-review-config-file" input (env var AI_REVIEW_CONFIG_FILE).
-	// When that input is left unset, config-file lookup is skipped entirely and behavior falls
-	// back to the plain action inputs, exactly as if this feature didn't exist.
-	public static String resolveAiReviewConfigFileName()
-	{
-		String configured = System.getenv("AI_REVIEW_CONFIG_FILE");
-		return configured == null ? "" : configured.trim();
-	}
-
-	public static AiReviewYamlConfig readCliqConnectorYamlAiReviewConfig(String workspacePath)
-	{
-		String configFileName = resolveAiReviewConfigFileName();
-		if(configFileName.isBlank())
-		{
-			debug("ai-review-config-file not set; skipping optional AI review config file lookup and using action inputs only.");
-			return new AiReviewYamlConfig(false, false, null, null, null);
-		}
-		try
-		{
-			Path yamlPath = Path.of(defaultIfBlank(workspacePath, "."), configFileName);
-			if(!Files.exists(yamlPath))
-			{
-				debug("Configured AI review file '" + configFileName + "' not found at " + yamlPath + ". Falling back to action inputs for AI review configuration.");
-				return new AiReviewYamlConfig(false, false, null, null, null);
-			}
-			var lines = Files.readAllLines(yamlPath, UTF_8);
-			return parseAiReviewYamlLines(lines);
-		}
-		catch(Exception e)
-		{
-			System.err.println("Unable to read/parse '" + configFileName + "': " + e.getMessage());
-			return new AiReviewYamlConfig(true, false, null, null, null);
-		}
-	}
-
-	// Minimal indentation-aware parser: finds a top-level "ai_review:" key, then reads its
-	// nested "enabled:", "service:", "model:" keys (2+ space indented, one level deep only).
-	// Not a general-purpose YAML parser - intentionally scoped to this exact, documented shape.
-	public static AiReviewYamlConfig parseAiReviewYamlLines(java.util.List<String> lines)
-	{
-		boolean blockFound = false;
-		int blockIndent = -1;
-		Boolean enabled = null;
-		String service = null;
-		String model = null;
-
-		for(int i = 0; i < lines.size(); i++)
-		{
-			String rawLine = lines.get(i);
-			String withoutComment = stripYamlComment(rawLine);
-			if(withoutComment.isBlank())
-				continue;
-			int indent = countLeadingSpaces(withoutComment);
-			String trimmed = withoutComment.trim();
-
-			if(!blockFound)
-			{
-				if(indent == 0 && (trimmed.equals("ai_review:") || trimmed.startsWith("ai_review:")))
-				{
-					blockFound = true;
-					blockIndent = indent;
-				}
-				continue;
-			}
-
-			// We were inside the block; a subsequent line at the same or lower indent as
-			// "ai_review:" itself means the block has ended.
-			if(indent <= blockIndent)
-				break;
-
-			if(trimmed.startsWith("enabled:"))
-			{
-				String value = trimmed.substring("enabled:".length()).trim();
-				value = stripYamlQuotes(value);
-				if(!value.isBlank())
-					enabled = Boolean.valueOf(isTrue(value));
-			}
-			else if(trimmed.startsWith("service:"))
-			{
-				String value = trimmed.substring("service:".length()).trim();
-				service = stripYamlQuotes(value);
-			}
-			else if(trimmed.startsWith("model:"))
-			{
-				String value = trimmed.substring("model:".length()).trim();
-				model = stripYamlQuotes(value);
-			}
-		}
-
-		return new AiReviewYamlConfig(true, blockFound, enabled, service, model);
-	}
-
-	public static String stripYamlComment(String line)
-	{
-		if(line == null)
-			return "";
-		boolean inQuotes = false;
-		char quoteChar = '\0';
-		for(int i = 0; i < line.length(); i++)
-		{
-			char c = line.charAt(i);
-			if(inQuotes)
-			{
-				if(c == quoteChar)
-					inQuotes = false;
-			}
-			else if(c == '"' || c == '\'')
-			{
-				inQuotes = true;
-				quoteChar = c;
-			}
-			else if(c == '#')
-			{
-				return line.substring(0, i);
-			}
-		}
-		return line;
-	}
-
-	public static String stripYamlQuotes(String value)
-	{
-		String trimmed = defaultIfBlank(value, "").trim();
-		if(trimmed.length() >= 2)
-		{
-			char first = trimmed.charAt(0);
-			char last = trimmed.charAt(trimmed.length() - 1);
-			if((first == '"' && last == '"') || (first == '\'' && last == '\''))
-				return trimmed.substring(1, trimmed.length() - 1);
-		}
-		return trimmed;
-	}
-
-	public static int countLeadingSpaces(String line)
-	{
-		int count = 0;
-		while(count < line.length() && line.charAt(count) == ' ')
-			count++;
-		return count;
-	}
-
-	// Normalizes a declared/guessed provider name to one of the three supported services.
-	// Returns "" (blank) when the value doesn't match any known service, so callers can
-	// distinguish "not declared / unrecognized" from a valid selection.
-	public static String normalizeAiService(String rawService)
-	{
-		String normalized = defaultIfBlank(rawService, "").trim().toLowerCase();
-		if("openai".equals(normalized) || "claude".equals(normalized) || "gemini".equals(normalized))
-			return normalized;
-		return "";
-	}
-
-	// NOTE: token-prefix provider sniffing (formerly guessProviderFromToken/
-	// describeProviderForMessage, e.g. "sk-ant-" -> claude, "AIza" -> gemini, "sk-" -> openai) has
-	// been intentionally removed. Google is transitioning Gemini/AI Studio keys away from the old
-	// "AIza..." API-key format toward newer "auth key" formats, so prefix matching is no longer a
-	// reliable way to identify a provider from its token shape and would silently misclassify (or
-	// fail to classify) valid keys going forward. Provider identity is now taken strictly from the
-	// DECLARED service (ai_review.service in the config file, or the ai-review-service input) -
-	// see handleAiReviewGate's declaredService/effectiveService handling above.
-
-	// Kept in sync with the "recommended" entries documented in action.yml's ai-review-model
-	// description. These are the models used ONLY when the user does not declare a model in
-	// the ai-review-config-file YAML - i.e. the "use the latest model of the configured service"
-	// fallback. Update both places together when a vendor deprecates/replaces a recommended model.
 	public static String resolveModelForProvider(String provider, String configuredModel)
 	{
 		if(configuredModel != null && !configuredModel.isBlank())
 			return configuredModel;
 		if("claude".equals(provider))
-			return "claude-sonnet-4-5-20250929";
+			return "claude-3-5-sonnet-latest";
 		if("gemini".equals(provider))
-			return "gemini-2.5-flash";
+			return "gemini-1.5-pro";
 		return "gpt-4.1-mini";
-	}
-
-	// Lightweight allow-list validation for a user-declared model, so a typo'd or deprecated
-	// model name in the ai-review-config-file YAML fails fast with a clear, actionable error
-	// instead of a confusing 404/400 from the provider's API. Intentionally permissive: only
-	// rejects a model when the provider is confidently known AND the model clearly does not
-	// belong to that provider's naming family, so legitimate new/未-listed model names (vendors
-	// ship new ones between updates to this list) are never blocked outright.
-	public static String validateModelForProvider(String provider, String configuredModel)
-	{
-		if(configuredModel == null || configuredModel.isBlank())
-			return null;
-		String model = configuredModel.trim().toLowerCase();
-		if("claude".equals(provider) && !model.startsWith("claude"))
-			return "Configured model `" + configuredModel + "` does not look like a Claude model (expected a name starting with `claude`, e.g. `claude-sonnet-4-5-20250929`).";
-		if("gemini".equals(provider) && !model.startsWith("gemini"))
-			return "Configured model `" + configuredModel + "` does not look like a Gemini model (expected a name starting with `gemini`, e.g. `gemini-2.5-flash`).";
-		if("openai".equals(provider) && !(model.startsWith("gpt") || model.startsWith("o1") || model.startsWith("o3") || model.startsWith("o4")))
-			return "Configured model `" + configuredModel + "` does not look like an OpenAI model (expected a name starting with `gpt`/`o1`/`o3`/`o4`, e.g. `gpt-4.1-mini`).";
-		return null;
 	}
 
 	public static String resolveApiUrlForProvider(String provider, String configuredApiUrl)
@@ -2785,172 +2043,18 @@ public class GitHub_Informer_New {
 		return invokeOpenAiCompatible(apiUrl, token, model, systemPrompt, userPrompt);
 	}
 
-	// Minimal, cheap real-call probe against the DECLARED provider's API, used only to verify
-	// that aiToken actually belongs to declaredService BEFORE spending a full diff-fetch + review
-	// cycle on it. Deliberately reuses the exact same invoke*/payload path as the real review call
-	// (not a hand-rolled "does this look like a key" check) so the only thing being tested is
-	// "does the real provider accept this token for this model", which is the one thing that
-    // actually matters and the only way to stay correct as providers change their key formats
-    // (see the removed guessProviderFromToken note above). Kept intentionally tiny: max_tokens/
-    // maxOutputTokens style limits are not set here since prompt is a single short word, so cost
-    // and latency are negligible compared to the real review call that follows.
-	// Returns null when the token and model were both accepted, or a short human-readable reason
-	// when either was rejected. Only ever probes the SINGLE model the user configured - no
-	// fallback/auto-switch to a different model. If that exact model is not supported by the
-	// provider, the gate fails fast with a clear PR comment telling the user to change
-	// `ai-review-model` and re-run, rather than silently reviewing with a different model than
-	// what they asked for.
-	// True when the probe response indicates the MODEL was not found/recognized by the provider,
-	// as opposed to the TOKEN being rejected. Anthropic: {"error":{"type":"not_found_error",...}}
-	// on a 404. OpenAI: {"error":{"code":"model_not_found",...}} typically on a 404. Gemini:
-	// {"error":{"code":404,"status":"NOT_FOUND",...}} when the model has been retired/renamed.
-	public static boolean looksLikeModelNotFound(String provider, int status, String body)
-	{
-		String upperBody = defaultIfBlank(body, "").toUpperCase();
-		if("claude".equals(provider))
-			return status == 404 || upperBody.contains("NOT_FOUND_ERROR") || upperBody.contains("\"MODEL:");
-		if("openai".equals(provider))
-			return status == 404 || upperBody.contains("MODEL_NOT_FOUND");
-		if("gemini".equals(provider))
-			// Google's retired/unknown-model response looks like:
-			// {"error":{"code":404,"message":"models/gemini-1.5-pro is not found for API version
-			// v1beta, or is not supported for generateContent...","status":"NOT_FOUND"}}
-			return status == 404 || upperBody.contains("\"STATUS\":\"NOT_FOUND\"") || upperBody.contains("NOT_FOUND");
-		return false;
-	}
-
-	// Result of the preflight credential/model probe against the SINGLE model the user configured.
-	// `errorMessage` is null when that exact model+token combination was accepted. `modelNotFound`
-	// distinguishes "the model name isn't supported" from "the token/key was rejected", so the
-	// caller can post a precise, actionable PR comment telling the user exactly what to fix.
-	public static class PreflightResult
-	{
-		public String errorMessage;
-		public boolean modelNotFound;
-
-		public PreflightResult(String errorMessage, boolean modelNotFound)
-		{
-			this.errorMessage = errorMessage;
-			this.modelNotFound = modelNotFound;
-		}
-	}
-
-	public static PreflightResult preflightVerifyAiCredentials(String provider, String apiUrl, String token, String model)
-	{
-		// Some users paste a "Bearer <token>" value into the token field by habit (copied from a
-		// curl example, etc.). Strip it defensively here so the preflight tests the actual key,
-		// not a value that will always be rejected regardless of whether the key itself is valid.
-		String cleanedToken = defaultIfBlank(token, "").trim();
-		if(cleanedToken.toLowerCase().startsWith("bearer "))
-			cleanedToken = cleanedToken.substring(7).trim();
-
-		try
-		{
-			HttpResult probe = invokeAiProvider(provider, apiUrl, cleanedToken, model, "Respond with exactly: OK", "OK");
-			if(probe.status >= 200 && probe.status <= 299)
-				return new PreflightResult(null, false);
-
-			String body = defaultIfBlank(probe.body, "");
-
-			if(looksLikeModelNotFound(provider, probe.status, body))
-			{
-				debug("AI credential preflight: model '" + model + "' not found/unsupported for " + provider + ", failing fast.");
-				return new PreflightResult(provider + " reported model `" + model + "` as not found or not supported. Response: "
-					+ trimTo(body.isBlank() ? "(no response body)" : body, 500), true);
-			}
-
-			// Only 401/403 (and Gemini's frequent 400 API_KEY_INVALID) are treated as a definitive
-			// credential/service mismatch worth failing fast on. Other statuses (429 rate limit,
-			// 5xx, transient network hiccups) are NOT reliable signals that the token is wrong for
-			// this provider, so they are deliberately let through here - the real review call
-			// below will surface those on its own if they persist, without falsely blaming the
-			// token for a problem that is actually transient or provider-side.
-			boolean looksLikeAuthFailure = probe.status == 401 || probe.status == 403
-				|| (probe.status == 400 && body.toUpperCase().contains("API_KEY_INVALID"));
-			if(!looksLikeAuthFailure)
-			{
-				debug("AI credential preflight: non-auth status " + probe.status + " from " + provider + ", not treated as a token/service mismatch. Proceeding.");
-				return new PreflightResult(null, false);
-			}
-
-			return new PreflightResult(provider + " rejected the token with status " + probe.status + " while probing model `" + model + "`. Response: "
-				+ trimTo(body.isBlank() ? "(no response body)" : body, 500), false);
-		}
-		catch(Exception e)
-		{
-			// Network/IO failure during the probe itself is not evidence of a bad token/model - do
-			// not fail the gate here, let the real review call attempt it and surface its own error.
-			debug("AI credential preflight: probe call threw " + e.getMessage() + " for model '" + model + "', skipping preflight verdict and proceeding.");
-			return new PreflightResult(null, false);
-		}
-	}
-
 	public static HttpResult invokeOpenAiCompatible(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
-		boolean includeTemperature = !modelRejectsTemperature(model);
-		HttpResult result = invokeOpenAiCompatibleInternal(apiUrl, token, model, systemPrompt, userPrompt, includeTemperature);
-		if(includeTemperature && isTemperatureDeprecatedError(result))
-			result = invokeOpenAiCompatibleInternal(apiUrl, token, model, systemPrompt, userPrompt, false);
-		return result;
-	}
-
-	public static HttpResult invokeOpenAiCompatibleInternal(String apiUrl, String token, String model, String systemPrompt, String userPrompt, boolean includeTemperature) throws IOException
-	{
-		String temperaturePart = includeTemperature ? "\"temperature\":0.1," : "";
-		String payload = "{\"model\":\"" + jsonEscape(model) + "\"," + temperaturePart + "\"messages\":[{\"role\":\"system\",\"content\":\"" + jsonEscape(systemPrompt) + "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"temperature\":0.1,\"messages\":[{\"role\":\"system\",\"content\":\"" + jsonEscape(systemPrompt) + "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		headers.put("Authorization", "Bearer " + token);
 		return sendHttpRequest("POST", apiUrl, payload, headers);
 	}
 
-	// Several providers have begun deprecating/rejecting the "temperature" sampling parameter on
-	// newer reasoning-oriented models (Anthropic's opus-5 family, OpenAI's o1/o3/o4 reasoning
-	// models, and this is spreading to newer Gemini releases too), returning a 400
-	// invalid_request_error instead of just ignoring the field. There is no published,
-	// future-proof list of which models reject it, so this is handled two ways together for all
-	// three providers (Claude, OpenAI-compatible, Gemini):
-	//   1) a best-effort model-name check skips sending it up front for known-affected families,
-	//      avoiding the wasted round trip in the common case, and
-	//   2) if the provider still rejects the request specifically because of "temperature", we
-	//      retry once automatically without it - so the gate self-heals against future model
-	//      deprecations without needing a code change every time a new model drops support.
-	// Older/standard models across all providers (Haiku, Sonnet, GPT-4.x, Gemini 1.x/2.x-flash,
-	// etc.) are unaffected: modelRejectsTemperature returns false for them, so temperature is
-	// still sent exactly as before - no behavior change, no extra round trip.
-	public static boolean modelRejectsTemperature(String model)
-	{
-		String normalized = defaultIfBlank(model, "").trim().toLowerCase();
-		if(normalized.contains("opus-5") || normalized.contains("opus5"))
-			return true;
-		// OpenAI's reasoning models (o1, o3, o4, and any future "o<digit>" family) fix their own
-		// sampling and reject a caller-supplied temperature outright.
-		if(normalized.matches("^o[0-9].*"))
-			return true;
-		return false;
-	}
-
-	public static boolean isTemperatureDeprecatedError(HttpResult result)
-	{
-		if(result == null || result.body == null)
-			return false;
-		String body = result.body.toLowerCase();
-		return body.contains("temperature") && (body.contains("deprecated") || body.contains("unsupported") || body.contains("not supported") || body.contains("does not support"));
-	}
-
 	public static HttpResult invokeClaude(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
-		boolean includeTemperature = !modelRejectsTemperature(model);
-		HttpResult result = invokeClaudeInternal(apiUrl, token, model, systemPrompt, userPrompt, includeTemperature);
-		if(includeTemperature && isTemperatureDeprecatedError(result))
-			result = invokeClaudeInternal(apiUrl, token, model, systemPrompt, userPrompt, false);
-		return result;
-	}
-
-	public static HttpResult invokeClaudeInternal(String apiUrl, String token, String model, String systemPrompt, String userPrompt, boolean includeTemperature) throws IOException
-	{
-		String temperaturePart = includeTemperature ? "\"temperature\":0.1," : "";
-		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":1200," + temperaturePart + "\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":1200,\"temperature\":0.1,\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		headers.put("x-api-key", token);
@@ -2959,15 +2063,6 @@ public class GitHub_Informer_New {
 	}
 
 	public static HttpResult invokeGemini(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
-	{
-		boolean includeTemperature = !modelRejectsTemperature(model);
-		HttpResult result = invokeGeminiInternal(apiUrl, token, model, systemPrompt, userPrompt, includeTemperature);
-		if(includeTemperature && isTemperatureDeprecatedError(result))
-			result = invokeGeminiInternal(apiUrl, token, model, systemPrompt, userPrompt, false);
-		return result;
-	}
-
-	public static HttpResult invokeGeminiInternal(String apiUrl, String token, String model, String systemPrompt, String userPrompt, boolean includeTemperature) throws IOException
 	{
 		String endpoint = apiUrl;
 		if(!endpoint.contains("generateContent"))
@@ -2981,8 +2076,7 @@ public class GitHub_Informer_New {
 		else
 			endpoint = endpoint + "?key=" + URLEncoder.encode(token, UTF_8);
 
-		String generationConfig = includeTemperature ? "{\"temperature\":0.1}" : "{}";
-		String payload = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jsonEscape(systemPrompt) + "\"}]},\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(userPrompt) + "\"}]}],\"generationConfig\":" + generationConfig + "}";
+		String payload = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jsonEscape(systemPrompt) + "\"}]},\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(userPrompt) + "\"}]}],\"generationConfig\":{\"temperature\":0.1}}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		return sendHttpRequest("POST", endpoint, payload, headers);
@@ -2995,124 +2089,10 @@ public class GitHub_Informer_New {
 		return raw.replace(" ", "%20");
 	}
 
-	// Sentinel returned when the PR's /files endpoint responds 200 with a definitively empty
-	// file list. That is a real, authoritative answer from GitHub (not a transient failure),
-	// so callers must treat it differently from "" (which means "endpoint didn't work / try again").
-	public static final String NO_CHANGED_FILES_SENTINEL = "\u0000NO_CHANGED_FILES\u0000";
-
-	public static String fetchPullRequestDiff(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken, boolean isIncremental)
+	public static String fetchPullRequestDiff(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
 	{
 		try
 		{
-			// SHA-pinned compare API is tried FIRST. It is explicitly scoped to the exact
-			// base/head commit SHAs captured at event time, so it cannot return a stale,
-			// previously-cached diff the way the PR-number-scoped endpoints below can
-			// immediately after a fresh "synchronize" push (GitHub lazily recomputes the
-			// PR-level diff/mergeability and can briefly serve the previous head's diff).
-			if(pullRequestBaseSha != null && !pullRequestBaseSha.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
-			{
-				HashMap<String, String> compareHeaders = new HashMap<String, String>();
-				compareHeaders.put("Accept", "application/vnd.github.v3.diff");
-				compareHeaders.put("Authorization", "Bearer " + githubToken);
-				String compareUrl = "https://api.github.com/repos/" + repository + "/compare/" + pullRequestBaseSha + "..." + pullRequestHeadSha;
-				HttpResult compareResponse = sendHttpRequest("GET", compareUrl, null, compareHeaders);
-				debug("AI diff fetch via compare API status=" + compareResponse.status + " base=" + pullRequestBaseSha + " head=" + pullRequestHeadSha + " incremental=" + isIncremental);
-				if(compareResponse.status >= 200 && compareResponse.status <= 299 && compareResponse.body != null && !compareResponse.body.isBlank())
-				{
-					// GitHub's compare API is known to occasionally serve a stale/cached diff body
-					// for a SHA range requested in quick succession after a fresh push (edge-cache
-					// eventual consistency), which is indistinguishable from a genuine 200 response
-					// and was silently trusted here before. Cross-check the file paths present in
-					// this diff against the PR's live current-head files list (which is recomputed
-					// per request and does not suffer the same caching lag). If the compare-API diff
-					// references files that are not present in the live head's changed-files set for
-					// a non-incremental (full base...head) fetch, treat it as stale and fall through
-					// to the PR-scoped endpoints below instead of handing stale content to the AI.
-					// DO NOT REMOVE: this check is load-bearing, not defensive dead code.
-					// Without it, a stale compare-API body can be silently accepted as the real
-					// diff for the new head. In practice this showed up as a vulnerable/buggy line
-					// being reviewed with hunks where that line only ever appears as a removal
-					// ("-"), because the AI was comparing against a cached diff computed for the
-					// PREVIOUS head instead of the current one - making an already-fixed or
-					// still-broken line look ambiguous or "already handled" to the reviewer logic.
-					// If you're tempted to delete this because it "never triggers" locally, don't:
-					// it only fires under GitHub's edge-cache race on rapid successive pushes,
-					// which is inherently hard to repro on demand but was observed in production.
-					if(!isIncremental && isCompareDiffStale(repository, prNumber, githubToken, compareResponse.body))
-					{
-						debug("AI diff fetch: compare API diff for head=" + pullRequestHeadSha + " looks stale relative to the live PR files list. Discarding and falling back to PR-scoped diff endpoints.");
-					}
-					else
-					{
-						return compareResponse.body;
-					}
-				}
-				if(compareResponse.status >= 200 && compareResponse.status <= 299 && isEmptyJsonArrayBody(compareResponse.body))
-					return NO_CHANGED_FILES_SENTINEL;
-
-				// The .diff media type returns an empty 2xx body BOTH when GitHub hasn't finished
-				// indexing the range yet, AND when the range is confirmed to have zero file-level
-				// changes (e.g. a merge commit, or an incremental before...head range that nets to
-				// no textual diff). Those two cases are indistinguishable from this response alone,
-				// which is exactly what caused 10 full retries (~80s) to be burned in incremental
-				// mode against a range that would never resolve. Disambiguate immediately using the
-				// JSON compare API (same base/head, default Accept), which always reports an
-				// authoritative "files" array/count regardless of indexing lag on the .diff endpoint.
-				if(compareResponse.status >= 200 && compareResponse.status <= 299 && (compareResponse.body == null || compareResponse.body.isBlank()))
-				{
-					HashMap<String, String> jsonCompareHeaders = new HashMap<String, String>();
-					jsonCompareHeaders.put("Accept", "application/vnd.github+json");
-					jsonCompareHeaders.put("Authorization", "Bearer " + githubToken);
-					HttpResult jsonCompareResponse = sendHttpRequest("GET", compareUrl, null, jsonCompareHeaders);
-					debug("AI diff fetch: empty .diff body, checking JSON compare API status=" + jsonCompareResponse.status);
-					if(jsonCompareResponse.status >= 200 && jsonCompareResponse.status <= 299 && jsonCompareResponse.body != null)
-					{
-						int changedFiles = countFilenameEntries(jsonCompareResponse.body);
-						if(changedFiles == 0 && jsonCompareResponse.body.contains("\"status\""))
-						{
-							// GitHub authoritatively confirms this exact SHA range has no changed
-							// files (common for incremental before...head ranges that collapse to
-							// nothing, e.g. a merge commit or a no-op push). Stop retrying now
-							// instead of exhausting the full retry budget for a result that will
-							// never change.
-							debug("AI diff fetch: JSON compare API confirms zero changed files for this SHA range. Not retrying further.");
-							return NO_CHANGED_FILES_SENTINEL;
-						}
-					}
-				}
-			}
-
-			// The files API, pulls/{n} diff-accept endpoint, and diff_url are all scoped to the
-			// PR NUMBER, not to a specific SHA range - they always reflect base...currentHead,
-			// never previousHead...currentHead. They are correct fallbacks for a full-PR diff,
-			// but would silently defeat incremental (delta-only) review by re-introducing the
-			// full cumulative diff whenever the SHA-pinned compare API above has a transient
-			// hiccup. So skip them entirely in incremental mode and let the retry loop keep
-			// retrying the compare API instead of falling back to the wrong range.
-			if(isIncremental)
-				return "";
-
-			// Files API is also SHA-independent-but-live; it reflects the PR's current head,
-			// recomputed per request, and rarely suffers the same diff-cache lag as the
-			// pulls/{n} diff-accept endpoint below. It is also the ONLY one of the four
-			// strategies that can distinguish "endpoint not ready yet" (non-2xx/empty body)
-			// from "GitHub confirms zero changed files" (2xx with an empty [] array) - the
-			// other three strategies return an empty diff body in both cases and cannot tell
-			// them apart, which is why the zero-files signal is detected here specifically.
-			String filesApiDiff = fetchPullRequestDiffFromFilesApi(repository, prNumber, githubToken);
-			if(filesApiDiff == NO_CHANGED_FILES_SENTINEL)
-				return NO_CHANGED_FILES_SENTINEL;
-			if(filesApiDiff != null && !filesApiDiff.isBlank())
-				return filesApiDiff;
-
-			HashMap<String, String> headers = new HashMap<String, String>();
-			headers.put("Accept", "application/vnd.github.v3.diff");
-			headers.put("Authorization", "Bearer " + githubToken);
-			HttpResult response = sendHttpRequest("GET", "https://api.github.com/repos/" + repository + "/pulls/" + prNumber, null, headers);
-			debug("AI diff fetch via pulls API (diff accept) status=" + response.status);
-			if(response.status >= 200 && response.status <= 299 && response.body != null && !response.body.isBlank())
-				return response.body;
-
 			if(pullRequestDiffUrl != null && !pullRequestDiffUrl.isBlank())
 			{
 				HashMap<String, String> diffHeaders = new HashMap<String, String>();
@@ -3123,6 +2103,30 @@ public class GitHub_Informer_New {
 				if(diffUrlResponse.status >= 200 && diffUrlResponse.status <= 299 && diffUrlResponse.body != null && !diffUrlResponse.body.isBlank())
 					return diffUrlResponse.body;
 			}
+
+			if(pullRequestBaseSha != null && !pullRequestBaseSha.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+			{
+				HashMap<String, String> compareHeaders = new HashMap<String, String>();
+				compareHeaders.put("Accept", "application/vnd.github.v3.diff");
+				compareHeaders.put("Authorization", "Bearer " + githubToken);
+				String compareUrl = "https://api.github.com/repos/" + repository + "/compare/" + pullRequestBaseSha + "..." + pullRequestHeadSha;
+				HttpResult compareResponse = sendHttpRequest("GET", compareUrl, null, compareHeaders);
+				debug("AI diff fetch via compare API status=" + compareResponse.status);
+				if(compareResponse.status >= 200 && compareResponse.status <= 299 && compareResponse.body != null && !compareResponse.body.isBlank())
+					return compareResponse.body;
+			}
+
+			HashMap<String, String> headers = new HashMap<String, String>();
+			headers.put("Accept", "application/vnd.github.v3.diff");
+			headers.put("Authorization", "Bearer " + githubToken);
+			HttpResult response = sendHttpRequest("GET", "https://api.github.com/repos/" + repository + "/pulls/" + prNumber, null, headers);
+			debug("AI diff fetch via pulls API (diff accept) status=" + response.status);
+			if(response.status >= 200 && response.status <= 299)
+				return response.body;
+
+			String filesApiDiff = fetchPullRequestDiffFromFilesApi(repository, prNumber, githubToken);
+			if(filesApiDiff != null && !filesApiDiff.isBlank())
+				return filesApiDiff;
 		}
 		catch(Exception e)
 		{
@@ -3131,57 +2135,20 @@ public class GitHub_Informer_New {
 		return "";
 	}
 
-	public static class DiffFetchResult
+	public static String fetchPullRequestDiffWithRetries(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken)
 	{
-		public String diff;
-		public boolean confirmedNoChangedFiles;
-
-		public DiffFetchResult(String diff, boolean confirmedNoChangedFiles)
-		{
-			this.diff = diff == null ? "" : diff;
-			this.confirmedNoChangedFiles = confirmedNoChangedFiles;
-		}
-	}
-
-	public static DiffFetchResult fetchPullRequestDiffWithRetries(String repository, String prNumber, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken, boolean isIncremental)
-	{
-		// Pushing a new commit straight to a branch that already has an open PR fires the
-		// "synchronize" webhook almost instantly, but GitHub's backend needs a short window
-		// to finish indexing the new head commit before ANY diff endpoint (compare API,
-		// files API, or the pulls-diff API) will recognize it - during that window all three
-		// can return 404/empty even though the push itself succeeded. Verifying the head SHA
-		// is resolvable before hammering the diff endpoints, plus a longer/slower backoff,
-		// closes that race instead of giving up and failing the whole AI review in strict mode.
-		int maxAttempts = 10;
-		long baseDelayMs = 3000L;
-		long maxDelayMs = 15000L;
-
-		if(pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
-			waitForCommitAvailability(repository, pullRequestHeadSha, githubToken, maxAttempts, baseDelayMs, maxDelayMs);
-
+		int maxAttempts = 4;
 		for(int attempt = 1; attempt <= maxAttempts; attempt++)
 		{
-			String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken, isIncremental);
-
-			// GitHub gave a definitive, authoritative "zero changed files" answer (HTTP 200,
-			// valid empty [] array). This is stable and will not change on retry, unlike a
-			// transient 404/empty-body while a commit is still being indexed - so stop
-			// immediately instead of burning the remaining attempts and retry delays.
-			if(diff == NO_CHANGED_FILES_SENTINEL)
-			{
-				debug("AI diff fetch attempt " + attempt + "/" + maxAttempts + ": GitHub confirmed zero changed files for base=" + pullRequestBaseSha + " head=" + pullRequestHeadSha + " incremental=" + isIncremental + ". Not retrying further.");
-				return new DiffFetchResult("", true);
-			}
-
+			String diff = fetchPullRequestDiff(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
 			if(diff != null && !diff.isBlank())
-				return new DiffFetchResult(diff, false);
+				return diff;
 			if(attempt < maxAttempts)
 			{
-				long delay = Math.min(baseDelayMs * attempt, maxDelayMs);
-				debug("AI diff fetch attempt " + attempt + "/" + maxAttempts + " failed (incremental=" + isIncremental + "). Retrying in " + delay + "ms...");
+				debug("AI diff fetch attempt " + attempt + " failed. Retrying...");
 				try
 				{
-					Thread.sleep(delay);
+					Thread.sleep(1500L * attempt);
 				}
 				catch(InterruptedException ie)
 				{
@@ -3190,113 +2157,7 @@ public class GitHub_Informer_New {
 				}
 			}
 		}
-		return new DiffFetchResult("", false);
-	}
-
-	// Polls GET /repos/{repo}/commits/{sha} until GitHub's API acknowledges the head commit
-	// exists (200), or the same retry budget is exhausted. This avoids wasting the diff-fetch
-	// retry loop on repeated 404s while GitHub is still indexing a just-pushed commit.
-	public static void waitForCommitAvailability(String repository, String headSha, String githubToken, int maxAttempts, long baseDelayMs, long maxDelayMs)
-	{
-		try
-		{
-			HashMap<String, String> headers = new HashMap<String, String>();
-			headers.put("Accept", "application/vnd.github+json");
-			headers.put("Authorization", "Bearer " + githubToken);
-			String endpoint = "https://api.github.com/repos/" + repository + "/commits/" + headSha;
-
-			for(int attempt = 1; attempt <= maxAttempts; attempt++)
-			{
-				HttpResult response = sendHttpRequest("GET", endpoint, null, headers);
-				debug("Commit availability check attempt " + attempt + "/" + maxAttempts + " status=" + response.status + " sha=" + headSha);
-				if(response.status >= 200 && response.status <= 299)
-					return;
-				long delay = Math.min(baseDelayMs * attempt, maxDelayMs);
-				try
-				{
-					Thread.sleep(delay);
-				}
-				catch(InterruptedException ie)
-				{
-					Thread.currentThread().interrupt();
-					return;
-				}
-			}
-			debug("Commit " + headSha + " was not confirmed available via GitHub API before diff fetch retries began. Proceeding anyway.");
-		}
-		catch(Exception e)
-		{
-			debug("Commit availability check failed with exception, proceeding to diff fetch retries anyway: " + e.getMessage());
-		}
-	}
-
-	// Extracts the set of file paths touched by a unified diff (lines starting with "diff --git
-	// a/<path> b/<path>"), used to sanity-check a compare-API diff against the PR's live files list.
-	public static java.util.Set<String> extractDiffFilePaths(String diff)
-	{
-		java.util.Set<String> paths = new java.util.HashSet<String>();
-		if(diff == null || diff.isBlank())
-			return paths;
-		Matcher matcher = Pattern.compile("(?m)^diff --git a/(.+?) b/(.+?)$").matcher(diff);
-		while(matcher.find())
-			paths.add(matcher.group(2));
-		return paths;
-	}
-
-	// Returns true when the file paths present in a compare-API diff body do not overlap at all
-	// with the PR's live current-head changed-files list, which is the practical signature of a
-	// stale/cached compare-API response (GitHub's compare endpoint can briefly serve a diff body
-	// computed against a previous head after a rapid successive push). A live files-API call is
-	// used as the source of truth since it is recomputed per request rather than cached per SHA
-	// range. Fails "open" (returns false / not-stale) on any error, empty diff, or empty live
-	// files list, since strict mode should only discard a diff when we have positive evidence it
-	// disagrees with the live PR state, never on inconclusive data.
-	//
-	// WHY THIS EXISTS (do not remove as "unused"/"paranoid" code): this guards against a real,
-	// previously-observed production bug where GitHub's compare API served a cached diff for the
-	// PR's previous head right after a "synchronize" push. That stale diff made it look like a
-	// vulnerable line only appeared as removed ("-") with no corresponding added line, which the
-	// AI review logic misread as the issue already being resolved, letting an actual problem slip
-	// through the gate. This staleness check plus the DIFF FORMAT RULES handling of removal-only
-	// hunks together close that gap. It only reproduces under GitHub's edge-cache race condition
-	// on rapid successive pushes, so it will rarely fire in normal manual testing - that is
-	// expected, not a sign the check is dead.
-	public static boolean isCompareDiffStale(String repository, String prNumber, String githubToken, String compareDiffBody)
-	{
-		try
-		{
-			java.util.Set<String> diffPaths = extractDiffFilePaths(compareDiffBody);
-			if(diffPaths.isEmpty())
-				return false;
-
-			HashMap<String, String> headers = new HashMap<String, String>();
-			headers.put("Accept", "application/vnd.github+json");
-			headers.put("Authorization", "Bearer " + githubToken);
-			String endpoint = "https://api.github.com/repos/" + repository + "/pulls/" + prNumber + "/files?per_page=100";
-			HttpResult response = sendHttpRequest("GET", endpoint, null, headers);
-			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
-				return false;
-
-			Matcher filenameMatcher = Pattern.compile("\\\"filename\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\"").matcher(response.body);
-			java.util.Set<String> liveFilePaths = new java.util.HashSet<String>();
-			while(filenameMatcher.find())
-				liveFilePaths.add(jsonUnescape(filenameMatcher.group(1)));
-			if(liveFilePaths.isEmpty())
-				return false;
-
-			for(String path : diffPaths)
-			{
-				if(liveFilePaths.contains(path))
-					return false; // at least one file overlaps - not stale
-			}
-			// None of the compare-API diff's file paths appear in the live PR files list at all.
-			return true;
-		}
-		catch(Exception e)
-		{
-			debug("Compare-diff staleness check failed, assuming not stale: " + e.getMessage());
-			return false;
-		}
+		return "";
 	}
 
 	public static String fetchPullRequestDiffFromFilesApi(String repository, String prNumber, String githubToken)
@@ -3306,45 +2167,16 @@ public class GitHub_Informer_New {
 			HashMap<String, String> headers = new HashMap<String, String>();
 			headers.put("Accept", "application/vnd.github+json");
 			headers.put("Authorization", "Bearer " + githubToken);
-
-			StringBuilder combined = new StringBuilder();
-			int totalFiles = 0;
-			int page = 1;
-			int maxPages = 10; // hard safety cap = 1000 files
-			while(page <= maxPages)
-			{
-				String endpoint = "https://api.github.com/repos/" + repository + "/pulls/" + prNumber + "/files?per_page=100&page=" + page;
-				HttpResult response = sendHttpRequest("GET", endpoint, null, headers);
-				debug("AI diff fetch via pulls files API page=" + page + " status=" + response.status);
-				if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
-					break;
-
-				int countOnPage = countFilenameEntries(response.body);
-				if(countOnPage == 0)
-				{
-					// A 2xx response with a valid, parseable empty array on page 1 is GitHub's
-					// authoritative answer, not a sign the endpoint is still warming up. Only
-					// trust this signal on page 1: a trailing empty page after earlier pages
-					// already returned files just means pagination ended normally.
-					if(page == 1 && isEmptyJsonArrayBody(response.body))
-						return NO_CHANGED_FILES_SENTINEL;
-					break;
-				}
-
-				String synthesizedDiff = synthesizeUnifiedDiffFromFilesResponse(response.body);
-				if(synthesizedDiff != null && !synthesizedDiff.isBlank())
-					combined.append(synthesizedDiff);
-
-				totalFiles += countOnPage;
-				if(countOnPage < 100)
-					break; // last page reached
-				page++;
-			}
-
-			if(totalFiles == 0)
+			String endpoint = "https://api.github.com/repos/" + repository + "/pulls/" + prNumber + "/files?per_page=100";
+			HttpResult response = sendHttpRequest("GET", endpoint, null, headers);
+			debug("AI diff fetch via pulls files API status=" + response.status);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
 				return "";
-			debug("AI diff fetch via pulls files API totalFiles=" + totalFiles + " pages=" + page);
-			return combined.toString();
+
+			String synthesizedDiff = synthesizeUnifiedDiffFromFilesResponse(response.body);
+			if(synthesizedDiff == null || synthesizedDiff.isBlank())
+				return "";
+			return synthesizedDiff;
 		}
 		catch(Exception e)
 		{
@@ -3353,101 +2185,18 @@ public class GitHub_Informer_New {
 		return "";
 	}
 
-	// True only for a well-formed, empty JSON array response body (e.g. "[]", possibly with
-	// surrounding whitespace). Used to make sure the zero-files fast-path is never taken for a
-	// malformed/truncated/non-JSON body that merely happens to contain no "filename" keys.
-	public static boolean isEmptyJsonArrayBody(String body)
-	{
-		if(body == null)
-			return false;
-		return body.trim().equals("[]");
-	}
-
-	public static int countFilenameEntries(String body)
-	{
-		if(body == null || body.isBlank())
-			return 0;
-		Matcher matcher = Pattern.compile("\\\"filename\\\"\\s*:\\s*\\\"").matcher(body);
-		int count = 0;
-		while(matcher.find())
-			count++;
-		return count;
-	}
-
-	// Splits the /files API's top-level JSON array into the substring for each individual file
-	// object (from one "{" that opens an array element to its matching "}"), tracking brace
-	// depth and string/escape state so that braces or quotes appearing inside string values
-	// (e.g. inside a "patch" field, which very often contains literal '{' or '}' characters
-	// from the source file's own code) never get mistaken for object boundaries. Extracting
-	// "filename"/"status"/"patch" independently WITHIN each object's own substring - rather than
-	// relying on a single regex to walk across field boundaries in file order with a lazy
-	// ".*?" - removes the field-ordering/backtracking fragility that could previously cause a
-	// perfectly present "patch" value to be missed (e.g. for files, like HTML, whose patch text
-	// contains many embedded quotes/backslashes) and wrongly reported as unreviewable.
-	public static java.util.List<String> splitJsonArrayIntoObjectStrings(String body)
-	{
-		java.util.List<String> objects = new java.util.ArrayList<String>();
-		if(body == null || body.isBlank())
-			return objects;
-
-		int depth = 0;
-		int objectStart = -1;
-		boolean inString = false;
-		boolean escaped = false;
-		for(int i = 0; i < body.length(); i++)
-		{
-			char c = body.charAt(i);
-			if(inString)
-			{
-				if(escaped)
-					escaped = false;
-				else if(c == '\\')
-					escaped = true;
-				else if(c == '"')
-					inString = false;
-				continue;
-			}
-			if(c == '"')
-			{
-				inString = true;
-				continue;
-			}
-			if(c == '{')
-			{
-				if(depth == 0)
-					objectStart = i;
-				depth++;
-			}
-			else if(c == '}')
-			{
-				depth--;
-				if(depth == 0 && objectStart >= 0)
-				{
-					objects.add(body.substring(objectStart, i + 1));
-					objectStart = -1;
-				}
-			}
-		}
-		return objects;
-	}
-
-	// NOTE: string-field extraction for "filename"/"status"/"patch" below reuses the existing
-	// extractJsonStringField(String json, String fieldName) helper defined elsewhere in this
-	// file (a hand-written, escape-aware scanner), which correctly handles values containing
-	// embedded quotes/backslashes/newlines - exactly what a "patch" value can contain - and
-	// returns null (not empty string) when the field is genuinely absent from the object.
-
 	public static String synthesizeUnifiedDiffFromFilesResponse(String body)
 	{
 		if(body == null || body.isBlank())
 			return "";
+		Matcher entryMatcher = Pattern.compile("\\\"filename\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\".*?\\\"status\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\".*?(?:\\\"patch\\\"\\s*:\\s*\\\"((?:\\\\.|[^\\\\\"])*)\\\")?", Pattern.DOTALL).matcher(body);
 		StringBuilder sb = new StringBuilder();
 		int count = 0;
-		for(String objectJson : splitJsonArrayIntoObjectStrings(body))
+		while(entryMatcher.find())
 		{
-			String fileName = defaultIfBlank(extractJsonStringField(objectJson, "filename"), "");
-			String status = defaultIfBlank(extractJsonStringField(objectJson, "status"), "");
-			String patch = extractJsonStringField(objectJson, "patch");
+			String fileName = jsonUnescape(defaultIfBlank(entryMatcher.group(1), ""));
+			String status = jsonUnescape(defaultIfBlank(entryMatcher.group(2), ""));
+			String patch = jsonUnescape(defaultIfBlank(entryMatcher.group(3), ""));
 			if(fileName.isBlank())
 				continue;
 			count++;
@@ -3461,63 +2210,14 @@ public class GitHub_Informer_New {
 			if(patch != null && !patch.isBlank())
 				sb.append(patch).append("\n");
 			else
-				sb.append("@@\n").append("[UNREVIEWABLE: No textual patch available from GitHub for this file (binary file or diff too large). Do not report issues for this file; instead list it once under DETAILS as FILE: ").append(fileName).append(", LINE: n/a, ISSUE: file could not be reviewed (no patch content available), FIX: review manually.]\n");
+				sb.append("@@\n").append("[No textual patch available from GitHub files API]\n");
 		}
 		if(count == 0)
 			return "";
 		return sb.toString();
 	}
 
-	// Removes removed ('-') lines from a unified diff while preserving everything the AI needs to
-	// still do a correct review: file headers ("diff --git", "index", "new/deleted file mode",
-	// "--- a/...", "+++ b/..."), hunk headers ("@@ ... @@", which carry the resulting line numbers
-	// for the '+'/context lines that follow), added ('+') lines, and unchanged context lines.
-	// This makes it structurally impossible for the AI to see - and therefore mistakenly flag -
-	// code that was deleted by the PR and no longer exists in the resulting file.
-	//
-	// Deliberately conservative: only lines that unambiguously start with a removal marker in a
-	// hunk body are dropped. Diff metadata lines that happen to start with '-' for unrelated
-	// reasons (e.g. "--- a/file", "---" YAML front matter inside a patch, "index 000...-000...")
-	// are matched and preserved explicitly BEFORE the generic '-' check so they are never dropped.
-	public static String stripRemovedLinesFromDiff(String diff)
-	{
-		if(diff == null || diff.isBlank())
-			return diff == null ? "" : diff;
-
-		String[] lines = diff.split("\n", -1);
-		StringBuilder kept = new StringBuilder();
-		for(int i = 0; i < lines.length; i++)
-		{
-			String line = lines[i];
-			boolean isFileHeaderLine = line.startsWith("diff --git ")
-				|| line.startsWith("index ")
-				|| line.startsWith("--- ")
-				|| line.startsWith("+++ ")
-				|| line.startsWith("new file mode")
-				|| line.startsWith("deleted file mode")
-				|| line.startsWith("old mode")
-				|| line.startsWith("new mode")
-				|| line.startsWith("similarity index")
-				|| line.startsWith("rename from")
-				|| line.startsWith("rename to")
-				|| line.startsWith("Binary files ")
-				|| line.startsWith("@@");
-
-			// A genuine removal line inside a hunk body starts with '-' but is NOT one of the
-			// file/hunk header forms above (those are checked first and always kept regardless
-			// of their leading character).
-			boolean isRemovedContentLine = !isFileHeaderLine && line.startsWith("-");
-			if(isRemovedContentLine)
-				continue;
-
-			kept.append(line);
-			if(i < lines.length - 1)
-				kept.append("\n");
-		}
-		return kept.toString();
-	}
-
-	public static String buildAiPrompt(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String diff, boolean isIncremental)
+	public static String buildAiPrompt(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String diff)
 	{
 		StringBuilder prompt = new StringBuilder();
 		prompt.append("Repository: ").append(defaultIfBlank(repository, "")).append("\\n");
@@ -3525,67 +2225,8 @@ public class GitHub_Informer_New {
 		prompt.append("PR Title: ").append(defaultIfBlank(pullRequestTitle, "")).append("\\n");
 		prompt.append("PR URL: ").append(defaultIfBlank(pullRequestUrl, "")).append("\\n\\n");
 		prompt.append("PR Description:\\n").append(defaultIfBlank(pullRequestBody, "")).append("\\n\\n");
-		if(isIncremental)
-			prompt.append("Review Scope: INCREMENTAL. The diff below contains ONLY the commits pushed in the most recent update to this pull request, not the full cumulative pull request diff. Judge only these changes.\\n\\n");
-
-		int maxDiffChars = 120000;
-		DiffTruncationResult truncationResult = truncateDiffByFileBoundary(defaultIfBlank(diff, ""), maxDiffChars);
-		prompt.append("Diff:\\n").append(truncationResult.diffText);
-		if(!truncationResult.omittedFiles.isEmpty())
-		{
-			prompt.append("\\n\\n[NOTE: The following ").append(truncationResult.omittedFiles.size())
-				.append(" file(s) could not be included in this review due to overall diff size limits and were NOT reviewed. Do not report issues for them, do not assume they are correct, and list each once under DETAILS as FILE: <name>, LINE: n/a, ISSUE: file omitted from AI review due to PR size limits, FIX: review manually. Omitted files: ")
-				.append(String.join(", ", truncationResult.omittedFiles)).append("]");
-		}
+		prompt.append("Diff:\\n").append(trimTo(defaultIfBlank(diff, ""), 18000));
 		return prompt.toString();
-	}
-
-	public static class DiffTruncationResult
-	{
-		public String diffText;
-		public ArrayList<String> omittedFiles;
-		public DiffTruncationResult(String diffText, ArrayList<String> omittedFiles)
-		{
-			this.diffText = diffText;
-			this.omittedFiles = omittedFiles;
-		}
-	}
-
-	public static DiffTruncationResult truncateDiffByFileBoundary(String diff, int maxChars)
-	{
-		ArrayList<String> omitted = new ArrayList<String>();
-		if(diff == null || diff.isBlank())
-			return new DiffTruncationResult("", omitted);
-		if(diff.length() <= maxChars)
-			return new DiffTruncationResult(diff, omitted);
-
-		String[] fileBlocks = diff.split("(?=^diff --git )", 0);
-		StringBuilder kept = new StringBuilder();
-		int runningLength = 0;
-		boolean limitReached = false;
-		Pattern filenamePattern = Pattern.compile("^diff --git a/(.*?) b/");
-		for(String block : fileBlocks)
-		{
-			if(block == null || block.isBlank())
-				continue;
-			if(!limitReached && runningLength + block.length() <= maxChars)
-			{
-				kept.append(block);
-				runningLength += block.length();
-			}
-			else
-			{
-				limitReached = true;
-				Matcher m = filenamePattern.matcher(block.trim());
-				if(m.find())
-					omitted.add(m.group(1));
-				else
-					omitted.add("(unnamed file)");
-			}
-		}
-		if(kept.length() == 0)
-			kept.append(trimTo(diff, maxChars));
-		return new DiffTruncationResult(kept.toString(), omitted);
 	}
 
 	public static String extractAiContent(String body, String provider)
@@ -3698,7 +2339,7 @@ public class GitHub_Informer_New {
 			return "";
 		source = trimTo(source, 12000);
 
-		source = source.replace("\\r", "").replace("\\\\n", "\\n").replace("**", "").replace("__", "");
+		source = source.replace("\\r", "").replace("\\\\n", "\\n");
 		Matcher detailsMatcher = Pattern.compile("(?is)\\bDETAILS\\b\\s*[:=]\\s*(.+)$").matcher(source);
 		if(detailsMatcher.find())
 			source = detailsMatcher.group(1).trim();
@@ -3792,7 +2433,6 @@ public class GitHub_Informer_New {
 		if(source.isBlank())
 			source = defaultIfBlank(rawBody, "");
 		source = trimTo(source, 12000);
-		source = source.replace("**", "").replace("__", "");
 
 		String patterns = "(PASS|FAIL|FAILED|APPROVED|REJECTED)";
 		Matcher labeled = Pattern.compile("(?im)\\b(RESULT|VERDICT|DECISION|OUTCOME)\\b\\s*(?:[:=]|-|->|=>)\\s*" + patterns + "\\b").matcher(source);
@@ -3812,6 +2452,25 @@ public class GitHub_Informer_New {
 			return mapDecisionToken(standalone.group(1));
 
 		return null;
+	}
+
+	public static void runAiReviewMarkdownTest()
+	{
+		String content = "RESULT: **PASS**\n"
+			+ "SUMMARY: **Looks good**\n"
+			+ "DETAILS:\n"
+			+ "1. **Authentication check** is missing after the token change.\n"
+			+ "2. **Fallback logic** should be added to avoid null handling errors.";
+
+		Boolean passed = parseAiPassFail(content, content);
+		if(passed == null || !passed.booleanValue())
+			throw new AssertionError("Expected PASS detection when markdown is present: " + passed);
+
+		String details = formatAiReviewDetails(content);
+		if(!details.contains("**Authentication check**") || !details.contains("**Fallback logic**"))
+			throw new AssertionError("Markdown formatting was stripped from AI review details: " + details);
+
+		System.out.println("AI review markdown regression test passed.");
 	}
 
 	public static Boolean mapDecisionToken(String token)
@@ -3840,124 +2499,29 @@ public class GitHub_Informer_New {
 		return value.substring(0, maxLen) + "\\n\\n[truncated]";
 	}
 
-	// Hidden marker embedded (as an HTML comment, invisible when rendered) in every AI review PR
-	// comment this action posts. postPullRequestComment() searches existing PR comments for this
-	// exact marker so that each new run UPDATES (PATCH) the same comment in place - reflecting the
-	// latest set of changed files, findings, file names, and line numbers - instead of appending a
-	// brand-new comment on every push and cluttering the PR thread with stale, superseded reports.
-	public static final String AI_REVIEW_COMMENT_MARKER = "<!-- ai-review-gate-comment-marker: do-not-remove -->";
-
 	public static String buildAiFailureMessage(String prNumber, String pullRequestUrl, String summary, String details)
 	{
 		StringBuilder msg = new StringBuilder();
-		msg.append(AI_REVIEW_COMMENT_MARKER).append("\n");
-		msg.append("### AI Review Report - :x: Changes Requested\n\n");
+		msg.append("### AI Review Report\n\n");
 		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
 		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
 			msg.append("(").append(pullRequestUrl).append(")");
 		msg.append("\n\n");
 		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review report")).append("\n\n");
 		msg.append("**Details (Step-by-step):**\n").append(trimTo(defaultIfBlank(details, "No details provided."), 3000)).append("\n\n");
-		msg.append("Please fix the blocking issues and push new changes to rerun AI review.\n\n");
-		msg.append("_Last updated: ").append(java.time.Instant.now().toString()).append("_");
+		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
 		return msg.toString();
 	}
 
-	// Success-path counterpart of buildAiFailureMessage(). Posted (via the same upserting
-	// postPullRequestComment) whenever the AI review gate PASSES, so the PR always carries exactly
-	// one up-to-date AI review comment - reflecting the latest reviewed changed file(s) and any
-	// non-blocking notes with FILE/LINE references - instead of leaving a stale "Failed" comment
-	// behind from an earlier push, or posting no comment at all on a clean first pass.
-	public static String buildAiSuccessMessage(String prNumber, String pullRequestUrl, String summary, String details)
-	{
-		StringBuilder msg = new StringBuilder();
-		msg.append(AI_REVIEW_COMMENT_MARKER).append("\n");
-		msg.append("### AI Review Report - :white_check_mark: Passed\n\n");
-		msg.append("PR #").append(defaultIfBlank(prNumber, "")).append(" ");
-		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
-			msg.append("(").append(pullRequestUrl).append(")");
-		msg.append("\n\n");
-		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review passed with no blocking issues.")).append("\n\n");
-		if(details != null && !details.isBlank())
-			msg.append("**Details (Step-by-step):**\n").append(trimTo(details, 3000)).append("\n\n");
-		msg.append("No blocking issues found in the reviewed changed file(s).\n\n");
-		msg.append("_Last updated: ").append(java.time.Instant.now().toString()).append("_");
-		return msg.toString();
-	}
-
-	// Cliq's message card supports a limited number of characters, and large PRs (multiple files/hunks)
-	// can produce AI review details that are too long or unreadable as a single chat card.
-	// So Cliq only gets a short redirect message; the full details are always posted in full on the
-	// GitHub PR comment. Mirrors the compact GitLab Informer Cliq card format (no inline detail dump).
-	public static String buildAiFailureCliqNotification(String prNumber, String pullRequestUrl, String summary, boolean detailsPostedAsPrComment, int summaryMaxLength, String actionsRunUrl)
-	{
-		StringBuilder msg = new StringBuilder();
-		msg.append(":x: **AI Review Failed**\n");
-		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
-			msg.append("[PR #").append(defaultIfBlank(prNumber, "")).append("](").append(pullRequestUrl).append(")");
-		else
-			msg.append("PR #").append(defaultIfBlank(prNumber, ""));
-		msg.append("\n\n");
-		if(detailsPostedAsPrComment && pullRequestUrl != null && !pullRequestUrl.isBlank())
-			msg.append("See full details in the [PR comment](").append(pullRequestUrl).append(").");
-		else if(pullRequestUrl != null && !pullRequestUrl.isBlank())
-			msg.append("Open the [pull request](").append(pullRequestUrl).append(") on GitHub to view details.");
-		else
-			msg.append("Open the pull request on GitHub to view details.");
-		return msg.toString();
-	}
-
-	public static int parseIntOrDefault(String value, int fallback)
-	{
-		try
-		{
-			if(value == null || value.isBlank())
-				return fallback;
-			return Integer.parseInt(value.trim());
-		}
-		catch(Exception e)
-		{
-			return fallback;
-		}
-	}
-
-	public static String buildActionsRunUrl(String repository)
-	{
-		String serverUrl = defaultIfBlank(System.getenv("GITHUB_SERVER_URL"), "https://github.com");
-		String runId = defaultIfBlank(System.getenv("GITHUB_RUN_ID"), "");
-		if(repository == null || repository.isBlank() || runId.isBlank())
-			return "";
-		return serverUrl + "/" + repository + "/actions/runs/" + runId;
-	}
-
-	// Upserts the AI review PR comment instead of always creating a new one. Each run's comment
-	// body (buildAiFailureMessage / any AI-review comment) carries the hidden AI_REVIEW_COMMENT_MARKER.
-	// On every invocation this first looks for an EXISTING comment on the PR that already carries
-	// that marker: if found, it PATCHes that same comment in place (so the PR thread always shows
-	// exactly one, up-to-date AI review report reflecting the latest changed file(s), findings,
-	// file names, and line numbers); if none exists yet (first run on this PR), it POSTs a new one.
-	// Falls back to always POSTing a new comment if the existing-comments lookup itself fails, so a
-	// transient GitHub API hiccup never silently swallows the review result.
 	public static void postPullRequestComment(String repository, String prNumber, String githubToken, String commentBody)
 	{
 		try
 		{
+			String payload = "{\"body\":\"" + jsonEscape(commentBody) + "\"}";
 			HashMap<String, String> headers = new HashMap<String, String>();
 			headers.put("Accept", "application/vnd.github+json");
 			headers.put("Authorization", "Bearer " + githubToken);
 			headers.put("Content-Type", "application/json");
-
-			String existingCommentId = findExistingAiReviewCommentId(repository, prNumber, headers);
-			String payload = "{\"body\":\"" + jsonEscape(commentBody) + "\"}";
-
-			if(existingCommentId != null && !existingCommentId.isBlank())
-			{
-				HttpResult updateResponse = sendHttpRequest("PATCH", "https://api.github.com/repos/" + repository + "/issues/comments/" + existingCommentId, payload, headers);
-				if(updateResponse.status >= 200 && updateResponse.status <= 299)
-					return;
-				System.err.println("Failed to update existing AI review PR comment (id=" + existingCommentId + "): status=" + updateResponse.status + ", body=" + preview(updateResponse.body) + ". Falling back to creating a new comment.");
-			}
-
 			HttpResult response = sendHttpRequest("POST", "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments", payload, headers);
 			if(response.status < 200 || response.status > 299)
 				System.err.println("Failed to post AI review PR comment: status=" + response.status + ", body=" + preview(response.body));
@@ -3968,64 +2532,13 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	// Pages through this PR's issue comments (newest concerns are rare enough that PR comment
-	// counts stay small, but paginate defensively anyway) looking for one whose body contains
-	// AI_REVIEW_COMMENT_MARKER. Returns that comment's id as a String, or null if none is found or
-	// the lookup fails for any reason (caller falls back to creating a new comment in that case).
-	public static String findExistingAiReviewCommentId(String repository, String prNumber, Map<String, String> headers)
-	{
-		try
-		{
-			int page = 1;
-			int maxPages = 10;
-			while(page <= maxPages)
-			{
-				String url = "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments?per_page=100&page=" + page;
-				HttpResult response = sendHttpRequest("GET", url, null, headers);
-				if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank())
-					return null;
-				String body = response.body;
-				if(isEmptyJsonArrayBody(body))
-					return null;
-
-				java.util.List<String> objects = splitJsonArrayIntoObjectStrings(body);
-				for(String obj : objects)
-				{
-					String commentBodyField = extractJsonStringField(obj, "body");
-					if(commentBodyField != null && commentBodyField.contains(AI_REVIEW_COMMENT_MARKER))
-					{
-						String idField = extractJsonStringField(obj, "id");
-						if(idField == null || idField.isBlank())
-						{
-							Matcher idMatcher = Pattern.compile("\"id\"\\s*:\\s*(\\d+)").matcher(obj);
-							if(idMatcher.find())
-								idField = idMatcher.group(1);
-						}
-						if(idField != null && !idField.isBlank())
-							return idField;
-					}
-				}
-
-				if(objects.size() < 100)
-					return null;
-				page++;
-			}
-			return null;
-		}
-		catch(Exception e)
-		{
-			debug("Lookup of existing AI review PR comment failed: " + e.getMessage());
-			return null;
-		}
-	}
-
 	public static void postAiFailureToCliqThread(String cliqEndpoint, String cliqThreadId, String imageUrl, String failureMessage)
 	{
 		if(cliqEndpoint == null || cliqEndpoint.isBlank())
 			return;
 		try
 		{
-			String message = failureMessage;
+			String message = "AI Review Report.\\n" + failureMessage;
 			if(cliqThreadId != null && !cliqThreadId.isBlank())
 			{
 				ArrayList<String> candidates = buildReplyToCandidates(cliqThreadId);
@@ -4091,18 +2604,6 @@ public class GitHub_Informer_New {
 	public static void debug(String message)
 	{
 		System.out.println("[CliqInformerDebug] " + message);
-	}
-
-	// Masks sensitive query-string values (e.g. Gemini's "?key=<API_KEY>") before a URL is
-	// written to logs. Gemini authenticates via a query parameter rather than a header, so the
-	// live API key would otherwise be printed verbatim in CI/Actions logs by debug() calls that
-	// include the raw endpoint. Handles "key=", "token=", "apikey=", "api_key=", "access_token="
-	// (case-insensitive) as either the first "?param=" or a subsequent "&param=" segment.
-	public static String redactSecrets(String url)
-	{
-		if(url == null)
-			return null;
-		return url.replaceAll("(?i)([?&](?:key|token|apikey|api_key|access_token)=)[^&]+", "$1REDACTED");
 	}
 
 	public static String preview(String value)
