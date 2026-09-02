@@ -62,38 +62,27 @@ inputs:
   pull-request-target-message:
     description: "The Message to be Delivered to the Cliq Channel during a pull request target event"
   ai-review-enabled:
-    description: "Enable AI review gate for pull requests. If 'ai-review-config-file' is also set and that file has an 'ai_review.enabled' key, the file's value takes precedence."
+    description: "Enable AI review gate for pull requests"
     default: false
-  ai-review-config-file:
-    description: "Optional: path (relative to the repository root) to a YAML file where you declare an 'ai_review:' block (enabled/service/model), for teams who prefer editing a plain config file over workflow inputs. There is no default and no required/assumed file name - leave this blank (the default) to configure AI review purely through the ai-review-* inputs above (including 'ai-review-service' below), exactly like any other input on this action. If both are set, values from this config file take precedence over the plain inputs."
-  ai-review-service:
-    description: "AI provider to use for review generation: openai, claude, or gemini. Required (here or via 'ai-review-config-file') whenever ai-review-enabled is true - there is no default. If 'ai-review-config-file' is also set and its 'ai_review' block declares 'service', that value takes precedence over this input, so you only need to set this when you want everything configured from the workflow file alone, with no separate config file. This declared value is the SOLE source of truth for BOTH routing (endpoint URL + request/response shaping) and the model (see 'ai-review-model') - 'ai-review-token' is never inspected to guess or override the provider. Make sure 'ai-review-token' actually belongs to this declared service, or requests will fail (typically 401/403) at the provider."
   ai-review-trigger:
     description: "AI review trigger mode: auto or label"
     default: auto
   ai-review-on-sync:
     description: "Run AI review again when new commits are pushed to the PR"
     default: true
-  ai-review-incremental-on-sync:
-    description: "On synchronize events, review only the newly pushed commits (before...head) instead of the full PR diff (base...head). Falls back to the full PR diff when there is no usable previous head (e.g. force-push, first sync)."
-    default: true
   ai-review-label:
     description: "Label name used when ai-review-trigger is label"
-  ai-review-full-on-ready-label:
-    description: "Label name that, when applied to a PR, forces one final full base...head AI review (ignoring incremental mode) as a pre-merge safety net. Set blank to disable this gate."
-    default: "ready-to-merge"
   ai-review-token:
-    description: "AI provider token for generating review. Provide this via a repository secret, e.g. secrets.AI_REVIEW_TOKEN. Never place the token in a config file. This token must belong to whichever provider is DECLARED via 'ai-review-service' (or the config file) - the token's shape/prefix is never inspected to guess or override the provider (Google is transitioning Gemini/AI Studio keys away from the old 'AIza...' API-key format toward newer 'auth key' formats, so prefix-based guessing is no longer reliable and is not used). If the token does not actually belong to the declared service, the request will fail at the provider (typically 401/403)."
+    description: "AI provider token for generating review"
   ai-review-api-url:
-    description: "AI provider endpoint. Leave BLANK (recommended) to let the action auto-resolve the correct endpoint strictly from your DECLARED 'ai-review-service' (config file or this input). Only set this explicitly if you use a custom/self-hosted/proxied endpoint. WARNING: setting this to a specific provider's URL (e.g. the OpenAI endpoint) while your DECLARED service is a different provider will misroute the request and fail, typically with a misleading 401. Latest known endpoints per provider (checked 2026-08-20 — re-verify against vendor docs periodically): openai -> https://api.openai.com/v1/chat/completions | claude -> https://api.anthropic.com/v1/messages | gemini -> https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent (model name goes in the URL path itself; API key is appended as a query param, not placed in this URL)."
+    description: "AI provider endpoint (optional; auto-resolved for OpenAI, Claude, and Gemini)"
+    default: "https://api.openai.com/v1/chat/completions"
   ai-review-model:
-    description: "AI model for review generation. If 'ai-review-config-file' is set and declares 'ai_review.model', that value takes precedence. Leave BLANK (recommended, and the default) to fall back to a per-service default resolved from your DECLARED 'ai-review-service' (config file or this input) - gpt-4.1-mini / claude-sonnet-4-5-20250929 / gemini-2.5-flash. WARNING: do not hardcode a model name here unless it belongs to your DECLARED service's family - setting an OpenAI model while declared 'ai-review-service' is claude or gemini fails validation immediately with a clear error (rather than silently misrouting). Latest known models per provider (checked 2026-08-20 — re-verify against vendor docs, names/availability change over time): openai -> gpt-4.1-mini (recommended) | gpt-4.1 | gpt-4.1-nano | gpt-4o | gpt-4o-mini | o4-mini. claude -> claude-sonnet-4-5-20250929 (recommended) | claude-opus-4-1-20250805 | claude-3-5-haiku-20241022. gemini -> gemini-2.5-flash (recommended) | gemini-2.5-pro | gemini-2.0-flash. Dated snapshots (e.g. Claude's) get retired on a vendor schedule -- if a model starts 404ing, check for a deprecation notice first."
+    description: "AI model for review generation"
+    default: "gpt-4.1-mini"
   ai-review-check-name:
     description: "GitHub required check name for AI review gate"
     default: "AI Review Gate"
-  ai-review-cliq-summary-length:
-    description: "Max character length of the AI review summary shown in the Cliq failure notification"
-    default: "300"
   push-message:
     description: "The Message to be Delivered to the Cliq Channel during a push event"
   registry-package-message:
@@ -274,7 +263,6 @@ runs:
             echo "PULL_REQUEST_DIFF_URL=${{ github.event.pull_request.diff_url }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_BASE_SHA=${{ github.event.pull_request.base.sha }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_BEFORE_SHA=${{ github.event.before }}" >> $GITHUB_ENV
             echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
             then
@@ -314,7 +302,6 @@ runs:
             echo "PULL_REQUEST_DIFF_URL=${{ github.event.pull_request.diff_url }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_BASE_SHA=${{ github.event.pull_request.base.sha }}" >> $GITHUB_ENV
             echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_BEFORE_SHA=${{ github.event.before }}" >> $GITHUB_ENV
             echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
             then
@@ -390,21 +377,13 @@ runs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           AI_REVIEW_ENABLED: ${{ inputs.ai-review-enabled }}
-          AI_REVIEW_CONFIG_FILE: ${{ inputs.ai-review-config-file }}
-          AI_REVIEW_SERVICE: ${{ inputs.ai-review-service }}
           AI_REVIEW_TRIGGER: ${{ inputs.ai-review-trigger }}
           AI_REVIEW_ON_SYNC: ${{ inputs.ai-review-on-sync }}
-          AI_REVIEW_INCREMENTAL_ON_SYNC: ${{ inputs.ai-review-incremental-on-sync }}
           AI_REVIEW_LABEL: ${{ inputs.ai-review-label }}
-          AI_REVIEW_FULL_LABEL: ${{ inputs.ai-review-full-on-ready-label }}
           AI_REVIEW_TOKEN: ${{ inputs.ai-review-token }}
           AI_REVIEW_API_URL: ${{ inputs.ai-review-api-url }}
           AI_REVIEW_MODEL: ${{ inputs.ai-review-model }}
           AI_REVIEW_CHECK_NAME: ${{ inputs.ai-review-check-name }}
-          AI_REVIEW_CLIQ_SUMMARY_LENGTH: ${{ inputs.ai-review-cliq-summary-length }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_SERVER_URL: ${{ github.server_url }}
-          GITHUB_WORKSPACE: ${{ github.workspace }}
         run: |
           JAVA=$JAVA_HOME_19_X64/bin/java
           CONNECTOR=$GITHUB_ACTION_PATH/src/GitHub_Informer_New.java
