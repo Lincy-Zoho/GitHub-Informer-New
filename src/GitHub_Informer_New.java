@@ -1,12 +1,9 @@
-import java.awt.Desktop;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
@@ -136,7 +133,6 @@ public class GitHub_Informer_New {
 					}
 					else if(Event.equals("Deployment"))
 					{
-						String Deployer = (String) System.getenv("GITHUB_ACTOR");
 						String DeploymentEnv = (String) System.getenv("DEPLOYMENT_ENV");
 						String DeploymentURL = (String) System.getenv("DEPLOYMENT_URL");
 					    DeploymentURL = DeploymentURL.replace("api","www");
@@ -145,7 +141,6 @@ public class GitHub_Informer_New {
 					}
 					else if(Event.equals("Deployment Status"))
 					{
-						String Deployer = (String) System.getenv("GITHUB_ACTOR");
 						String DeploymentEnv = (String) System.getenv("DEPLOYMENT_ENV");
 						String DeploymentURL = (String) System.getenv("DEPLOYMENT_URL");
 					    DeploymentURL = DeploymentURL.replace("api","www");
@@ -221,7 +216,6 @@ public class GitHub_Informer_New {
 					{
 						String Discusser = (String) System.getenv("GITHUB_ACTOR");
 						String DiscussionTitle = (String) System.getenv("DISCUSSION");
-						String DiscussionComment = (String) System.getenv("DISCUSSION_COMMENT");
 						String DiscussionURL = (String) System.getenv("DISCUSSION_URL");
 						String CommentURL = (String) System.getenv("COMMENT_URL");
 						if(Action.equals("created"))
@@ -370,7 +364,6 @@ public class GitHub_Informer_New {
 						String IssueName = (String) System.getenv("ISSUE_TITLE");
 						IssueName = IssueName + " #" +  (String) System.getenv("ISSUE_NUMBER");
 						String IssueURL = (String) System.getenv("ISSUE_URL");
-						String IssueComment = (String) System.getenv("ISSUE_COMMENT");
 						if(IssueType.equals("ISSUE"))
 						{
 							if(Action.equals("created"))
@@ -565,7 +558,6 @@ public class GitHub_Informer_New {
 						String Branch_Name = (String) System.getenv("GITHUB_REF_NAME");
 						String Branch_Type = (String) System.getenv("GITHUB_REF_TYPE");
 						String Commit_URL = (String) System.getenv("COMMIT_URL");
-						String Compare_URL = (String) System.getenv("COMPARE_URL");
 						message ="[" + Pusher + "](" + ServerURL + Pusher + ") has pushed a new [code](" + Commit_URL + ") in the " + Branch_Type + " [" + Branch_Name + "](" + ServerURL + Repository + "/tree/" + Branch_Name + ")";
 					}
 					else if(Event.equals("Registry Package"))
@@ -628,7 +620,6 @@ public class GitHub_Informer_New {
 					}
 					else if(Event.equals("Status"))
 					{
-						String Trigger_Actor = (String) System.getenv("GITHUB_ACTOR");
 						String Workflow = (String) System.getenv("GITHUB_WORKFLOW");
 						String WorkflowID = (String) System.getenv("GITHUB_RUN_ID");
 						String Status = (String) System.getenv("STATUS");
@@ -1840,22 +1831,43 @@ public class GitHub_Informer_New {
 	public static class AiReviewDecision
 	{
 		public boolean passed;
+		public String status;
 		public String conclusion;
 		public String summary;
 		public String details;
+		public String reason;
 
 		public AiReviewDecision(boolean passed, String summary, String details)
 		{
-			this(passed, passed ? "success" : "failure", summary, details);
+			this(passed, passed ? "PASS" : "FAIL", summary, details, passed ? "AI review passed." : "AI review failed.");
 		}
 
-		public AiReviewDecision(boolean passed, String conclusion, String summary, String details)
+		public AiReviewDecision(boolean passed, String status, String summary, String details)
+		{
+			this(passed, status, summary, details, passed ? "AI review passed." : "AI review failed.");
+		}
+
+		public AiReviewDecision(boolean passed, String status, String summary, String details, String reason)
 		{
 			this.passed = passed;
-			this.conclusion = defaultIfBlank(conclusion, passed ? "success" : "failure");
+			this.status = defaultIfBlank(status, passed ? "PASS" : "FAIL").trim().toUpperCase();
+			this.conclusion = defaultIfBlank(status, passed ? "success" : "failure").trim().toLowerCase();
+			if("PASS".equals(this.status))
+				this.conclusion = "success";
+			else if("FAIL".equals(this.status) || "PARTIAL".equals(this.status))
+				this.conclusion = "failure";
 			this.summary = summary == null ? "" : summary;
 			this.details = details == null ? "" : details;
+			this.reason = reason == null ? "" : reason;
 		}
+	}
+
+	public static class StructuredAiReviewResult
+	{
+		public String status;
+		public String summary;
+		public String reason;
+		public String details;
 	}
 
 	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
@@ -1954,28 +1966,42 @@ public class GitHub_Informer_New {
 		String diff = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
 		if(diff == null || diff.isBlank())
 			return new AiReviewDecision(false, "failure", "AI Review Gate failed", "Unable to fetch PR diff from GitHub after retries. Failing AI review in strict mode.");
-		if(isVersionOnlyChange(diff))
-			return new AiReviewDecision(true, "Version-only update", "Summary: No logic or security issue detected in this version-only change.", "1. Version-only change detected. No functional issue found.\n2. No code logic, security, or regression risk detected in this PR.");
 
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff);
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Return valid GitHub-flavored Markdown for the final comment. Use simple numbered bullet points, bold emphasis, and short headings only. Do not use markdown tables. Keep the response readable in a GitHub PR comment. Required structure: a RESULT line, a short SUMMARY line, and a DETAILS section. For each detail item include FILE, LINE, ISSUE, and FIX in plain numbered list form like: 1. FILE: path | LINE: n/a | ISSUE: ... | FIX: ... Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. PR title and description are optional context only. If the title is missing, vague, or the description is incomplete, ignore that and judge the change by the actual code diff. Do not block the review because the PR description is weak or blank. If the PR only changes a version number, workflow tag, release metadata, or dependency version and there is no logic, security, or regression change, return RESULT: PASS, SUMMARY: Version-only change, and DETAILS: 1. No functional issue detected in this version-only update. Do not fabricate issues for harmless version bumps. Fail only when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. IMPORTANT: do not escape markdown characters or output plain text-only content. The final response must be valid Markdown for GitHub but without markdown tables. If you detect absolutely no code behavior change, do not invent file or line issues.";
+		String systemPrompt = "You are a strict PR reviewer. Return JSON only in a single object with the exact schema below. Never return markdown, never wrap in code fences, never add extra text before or after the JSON. Use this schema exactly: {\"status\": \"PASS|FAIL|PARTIAL\", \"summary\": \"short summary\", \"reason\": \"why this status was chosen\", \"issues\": [{\"file\": \"path/to/file\", \"line\": \"n/a or number\", \"issue\": \"short issue description\", \"fix\": \"recommended fix\"}]}. PASS means no blocking problems. FAIL means a blocking issue was found. PARTIAL means the AI could not fully assess the change or the result is incomplete, so it should block the merge. If there is no code behavior change, return PASS with a short summary. If the PR description is weak or blank, ignore it and judge the actual diff. Do not invent issues for harmless version bumps. If you cannot determine a line number, use \"n/a\". If there are no issues, set \"issues\": [].";
 
 		try
 		{
 			HttpResult aiResponse = invokeAiProvider(provider, apiUrl, aiToken, model, systemPrompt, userPrompt);
+			System.out.println("[AI_REVIEW_RAW_RESPONSE] " + defaultIfBlank(aiResponse.body, "<empty>"));
 			if(aiResponse.status < 200 || aiResponse.status > 299)
-				return new AiReviewDecision(false, "AI Review Gate failed", provider + " request failed with status " + aiResponse.status + ".");
+				return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", provider + " request failed with status " + aiResponse.status + ".", "The AI provider did not return a valid response.");
 
 			String content = normalizeEscapedMarkdownText(extractAiContent(aiResponse.body, provider));
 			if(content == null || content.isBlank())
-				return new AiReviewDecision(false, "AI Review Gate failed", provider + " returned empty content.");
+				return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", provider + " returned empty content.", "The AI provider returned an empty response; the merge is blocked.");
+
+			StructuredAiReviewResult structured = parseStructuredAiReview(content, aiResponse.body);
+			if(structured != null && structured.status != null && !structured.status.isBlank())
+			{
+				String status = structured.status.trim().toUpperCase();
+				boolean passed = "PASS".equals(status);
+				String summary = defaultIfBlank(structured.summary, passed ? "AI review passed" : "AI review report");
+				String details = defaultIfBlank(structured.details, formatAiReviewDetails(content));
+				if(details == null || details.isBlank())
+					details = "1. No detailed issues were returned by the AI response.";
+				String reason = defaultIfBlank(structured.reason, passed ? "AI review passed." : "AI review did not pass the gate.");
+				if("PARTIAL".equals(status))
+					return new AiReviewDecision(false, "PARTIAL", summary, details, reason);
+				return new AiReviewDecision(passed, status, summary, details, reason);
+			}
 
 			Boolean passedDecision = parseAiPassFail(content, aiResponse.body);
 			if(passedDecision == null)
-				return new AiReviewDecision(false, "AI Review Gate failed", "AI response did not include a valid RESULT field. Response preview: " + trimTo(defaultIfBlank(content, aiResponse.body), 800));
+				return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", "AI response did not include a valid status. Response preview: " + trimTo(defaultIfBlank(content, aiResponse.body), 800), "The AI result was empty, malformed, or missing the required status field.");
 
 			boolean passed = passedDecision.booleanValue();
 			String summary = extractLine(content, "SUMMARY");
@@ -2367,7 +2393,7 @@ public class GitHub_Informer_New {
 				continue;
 			if(line.contains("|") && line.matches(".*\\|.*\\|.*"))
 				continue;
-			if(line.matches("(?i)^\\s*\\|?\\s*[:\- ]+\\|[:\- |\\s]+\\|?\\s*$"))
+			if(line.matches("(?i)^\\s*(?:\\|)?\\s*[:\\- ]+\\|[:\\- |\\s]+(?:\\|)?\\s*$"))
 				continue;
 
 			line = line.replaceFirst("(?i)^\\s*(RESULT|VERDICT|DECISION|OUTCOME)\\s*[:=]\\s*(PASS|FAIL|FAILED|APPROVED|REJECTED)\\s*", "").trim();
@@ -2443,6 +2469,65 @@ public class GitHub_Informer_New {
 		return parts;
 	}
 
+	public static StructuredAiReviewResult parseStructuredAiReview(String content, String rawBody)
+	{
+		String source = normalizeEscapedMarkdownText(defaultIfBlank(content, defaultIfBlank(rawBody, "")));
+		if(source == null || source.isBlank())
+			return null;
+		String trimmed = source.trim();
+		if(trimmed.startsWith("{") && trimmed.endsWith("}"))
+		{
+			StructuredAiReviewResult result = new StructuredAiReviewResult();
+			result.status = extractJsonStringField(trimmed, "status");
+			if(result.status == null || result.status.isBlank())
+				result.status = extractJsonStringField(trimmed, "result");
+			if(result.status == null || result.status.isBlank())
+				result.status = extractJsonStringField(trimmed, "verdict");
+			result.summary = extractJsonStringField(trimmed, "summary");
+			result.reason = extractJsonStringField(trimmed, "reason");
+			if(result.reason == null || result.reason.isBlank())
+				result.reason = extractJsonStringField(trimmed, "message");
+			result.details = extractStructuredIssueText(trimmed);
+			if(result.details == null || result.details.isBlank())
+				result.details = formatAiReviewDetails(trimmed);
+			if(result.status != null && !result.status.isBlank())
+				return result;
+		}
+
+		Matcher statusLine = Pattern.compile("(?im)^\\s*(?:status|result|verdict|decision|outcome)\\s*[:=]\\s*(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\\b").matcher(source);
+		if(statusLine.find())
+		{
+			StructuredAiReviewResult result = new StructuredAiReviewResult();
+			result.status = statusLine.group(1).trim().toUpperCase();
+			result.summary = extractLine(source, "SUMMARY");
+			result.reason = extractLine(source, "REASON");
+			result.details = formatAiReviewDetails(source);
+			return result;
+		}
+		return null;
+	}
+
+	public static String extractStructuredIssueText(String json)
+	{
+		if(json == null || json.isBlank())
+			return "";
+		Matcher arrayMatcher = Pattern.compile("(?is)\"issues\"\\s*:\\s*\\[(.*?)]").matcher(json);
+		if(!arrayMatcher.find())
+			return "";
+		ArrayList<String> issueTexts = new ArrayList<String>();
+		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"(.*?)\"\\s*,\\s*\"line\"\\s*:\\s*\"(.*?)\"\\s*,\\s*\"issue\"\\s*:\\s*\"(.*?)\"\\s*,\\s*\"fix\"\\s*:\\s*\"(.*?)\"\\s*\\}");
+		Matcher itemMatcher = itemPattern.matcher(arrayMatcher.group(1));
+		while(itemMatcher.find())
+		{
+			String file = itemMatcher.group(1);
+			String line = itemMatcher.group(2);
+			String issue = itemMatcher.group(3);
+			String fix = itemMatcher.group(4);
+			issueTexts.add("FILE: " + defaultIfBlank(file, "n/a") + " | LINE: " + defaultIfBlank(line, "n/a") + " | ISSUE: " + defaultIfBlank(issue, "No issue provided.") + " | FIX: " + defaultIfBlank(fix, "No fix provided."));
+		}
+		return String.join("\n", issueTexts);
+	}
+
 	public static Boolean parseAiPassFail(String content, String rawBody)
 	{
 		String source = defaultIfBlank(content, "");
@@ -2450,16 +2535,16 @@ public class GitHub_Informer_New {
 			source = defaultIfBlank(rawBody, "");
 		source = trimTo(source, 12000);
 
-		String patterns = "(PASS|FAIL|FAILED|APPROVED|REJECTED)";
-		Matcher labeled = Pattern.compile("(?im)\\b(RESULT|VERDICT|DECISION|OUTCOME)\\b\\s*(?:[:=]|-|->|=>)\\s*" + patterns + "\\b").matcher(source);
+		String patterns = "(PASS|FAIL|FAILED|PARTIAL|APPROVED|REJECTED)";
+		Matcher labeled = Pattern.compile("(?im)\\b(RESULT|VERDICT|DECISION|OUTCOME|STATUS)\\b\\s*(?:[:=]|-|->|=>)\\s*" + patterns + "\\b").matcher(source);
 		if(labeled.find())
 			return mapDecisionToken(labeled.group(2));
 
-		Matcher markdownList = Pattern.compile("(?im)^\\s*[-*]\\s*(RESULT|VERDICT|DECISION|OUTCOME)\\s*(?:[:=]|-|->|=>)\\s*" + patterns + "\\b").matcher(source);
+		Matcher markdownList = Pattern.compile("(?im)^\\s*[-*]\\s*(RESULT|VERDICT|DECISION|OUTCOME|STATUS)\\s*(?:[:=]|-|->|=>)\\s*" + patterns + "\\b").matcher(source);
 		if(markdownList.find())
 			return mapDecisionToken(markdownList.group(2));
 
-		Matcher jsonResult = Pattern.compile("(?im)\"(result|verdict|decision|outcome)\"\\s*:\\s*\"" + patterns + "\"").matcher(source);
+		Matcher jsonResult = Pattern.compile("(?im)\"(result|verdict|decision|outcome|status)\"\\s*:\\s*\"" + patterns + "\"").matcher(source);
 		if(jsonResult.find())
 			return mapDecisionToken(jsonResult.group(2));
 
@@ -2494,7 +2579,7 @@ public class GitHub_Informer_New {
 		String normalized = defaultIfBlank(token, "").trim().toUpperCase();
 		if("PASS".equals(normalized) || "APPROVED".equals(normalized))
 			return true;
-		if("FAIL".equals(normalized) || "FAILED".equals(normalized) || "REJECTED".equals(normalized))
+		if("FAIL".equals(normalized) || "FAILED".equals(normalized) || "REJECTED".equals(normalized) || "PARTIAL".equals(normalized))
 			return false;
 		return null;
 	}
@@ -2509,33 +2594,6 @@ public class GitHub_Informer_New {
 			|| normalized.contains("- [x]") || normalized.contains("- [ ]") || normalized.contains("\n1.") || normalized.contains("\n- ");
 	}
 
-	public static boolean isVersionOnlyChange(String diff)
-	{
-		if(diff == null || diff.isBlank())
-			return false;
-		String source = normalizeEscapedMarkdownText(diff).trim();
-		if(source.isBlank())
-			return false;
-
-		String cleaned = source
-			.replaceAll("(?m)^diff --git .*", "")
-			.replaceAll("(?m)^index .*", "")
-			.replaceAll("(?m)^--- .*", "")
-			.replaceAll("(?m)^\+\+\+ .*", "")
-			.replaceAll("(?m)^@@ .*", "")
-			.replaceAll("(?m)^[+-]", "")
-			.trim();
-		if(cleaned.isBlank())
-			return false;
-
-		String normalized = cleaned.toLowerCase();
-		boolean hasVersionToken = Pattern.compile("(?i)(?:v?\\d+\\.\\d+\\.\\d+|version\\s*[:=]\\s*['\"]?v?\\d+\\.\\d+\\.\\d+|uses:\\s*.*@v?\\d+\\.\\d+\\.\\d+|image:\\s*.*:v?\\d+\\.\\d+\\.\\d+)").matcher(normalized).find();
-		if(!hasVersionToken)
-			return false;
-
-		boolean hasLogicKeyword = Pattern.compile("(?i)\\b(if|for|while|switch|return|function|class|const|let|var|public|private|import|export|throw|catch|try|async|await|token|secret|sql|http|json|yaml)\\b").matcher(normalized).find();
-		return !hasLogicKeyword;
-	}
 
 	public static String extractMarkdownSummary(String content)
 	{
@@ -2587,6 +2645,8 @@ public class GitHub_Informer_New {
 			if(pullRequestUrl != null && !pullRequestUrl.isBlank())
 				msg.append("(").append(pullRequestUrl).append(")");
 			msg.append("\n\n");
+			msg.append("**Status:** FAIL\n\n");
+			msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review report")).append("\n\n");
 			msg.append(trimTo(trimmedDetails, 6000)).append("\n\n");
 			msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
 			return msg.toString();
@@ -2597,6 +2657,7 @@ public class GitHub_Informer_New {
 		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
 			msg.append("(").append(pullRequestUrl).append(")");
 		msg.append("\n\n");
+		msg.append("**Status:** FAIL\n\n");
 		msg.append("**Summary:** ").append(defaultIfBlank(summary, "AI review report")).append("\n\n");
 		msg.append("**Details (Step-by-step):**\n").append(trimTo(trimmedDetails, 3000)).append("\n\n");
 		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
