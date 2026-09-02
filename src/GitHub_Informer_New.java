@@ -1954,12 +1954,14 @@ public class GitHub_Informer_New {
 		String diff = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
 		if(diff == null || diff.isBlank())
 			return new AiReviewDecision(false, "failure", "AI Review Gate failed", "Unable to fetch PR diff from GitHub after retries. Failing AI review in strict mode.");
+		if(isVersionOnlyChange(diff))
+			return new AiReviewDecision(true, "Version-only update", "Summary: No logic or security issue detected in this version-only change.", "1. Version-only change detected. No functional issue found.\n2. No code logic, security, or regression risk detected in this PR.");
 
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff);
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Return valid GitHub-flavored Markdown for the final comment. Use headings, bullets, tables, bold, emphasis, and code fences if helpful. Keep the answer readable in a GitHub PR comment. Required structure: a RESULT line, a short SUMMARY line, and a DETAILS section. For each detail item include FILE, LINE, ISSUE, and FIX. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. Fail when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. IMPORTANT: do not escape markdown characters or output plain text-only content. The final response must be valid Markdown for GitHub.";
+		String systemPrompt = "You are a strict PR reviewer. Return valid GitHub-flavored Markdown for the final comment. Use headings, bullets, tables, bold, emphasis, and code fences if helpful. Keep the answer readable in a GitHub PR comment. Required structure: a RESULT line, a short SUMMARY line, and a DETAILS section. For each detail item include FILE, LINE, ISSUE, and FIX. Use file paths and line numbers from the provided diff hunks. If an exact line cannot be determined, use LINE: n/a. If the PR only changes a version number, workflow tag, release metadata, or dependency version and there is no logic, security, or regression change, return RESULT: PASS, SUMMARY: Version-only change, and DETAILS: 1. No functional issue detected in this version-only update. Do not flag harmless version bumps. Fail only when there are critical or high severity issues related to security, data loss risk, breaking regressions, missing critical validation/error handling, or missing critical tests for changed logic. IMPORTANT: do not escape markdown characters or output plain text-only content. The final response must be valid Markdown for GitHub.";
 
 		try
 		{
@@ -2226,13 +2228,17 @@ public class GitHub_Informer_New {
 
 	public static String buildAiPrompt(String repository, String prNumber, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String diff)
 	{
+		String normalizedDiff = defaultIfBlank(diff, "");
 		StringBuilder prompt = new StringBuilder();
 		prompt.append("Repository: ").append(defaultIfBlank(repository, "")).append("\\n");
 		prompt.append("PR Number: ").append(defaultIfBlank(prNumber, "")).append("\\n");
 		prompt.append("PR Title: ").append(defaultIfBlank(pullRequestTitle, "")).append("\\n");
 		prompt.append("PR URL: ").append(defaultIfBlank(pullRequestUrl, "")).append("\\n\\n");
 		prompt.append("PR Description:\\n").append(defaultIfBlank(pullRequestBody, "")).append("\\n\\n");
-		prompt.append("Diff:\\n").append(trimTo(defaultIfBlank(diff, ""), 18000));
+		prompt.append("Review rule: if this diff is a version-only update (for example a version tag, release number, workflow image tag, or dependency version bump with no logic change), skip the review and return PASS with a short summary that says the change is a harmless version bump.\\n");
+		prompt.append("Only flag issues when there is a real logic, security, or regression risk.\\n");
+		prompt.append("Ignore formatting-only or metadata-only changes when no code behavior changed.\\n");
+		prompt.append("Diff:\\n").append(trimTo(normalizedDiff, 18000));
 		return prompt.toString();
 	}
 
@@ -2496,6 +2502,20 @@ public class GitHub_Informer_New {
 		return normalized.contains("# ") || normalized.contains("## ") || normalized.contains("| ")
 			|| normalized.contains("**") || normalized.contains("```") || normalized.contains("> ")
 			|| normalized.contains("- [x]") || normalized.contains("- [ ]") || normalized.contains("\n1.") || normalized.contains("\n- ");
+	}
+
+	public static boolean isVersionOnlyChange(String diff)
+	{
+		if(diff == null || diff.isBlank())
+			return false;
+		String source = normalizeEscapedMarkdownText(diff).trim();
+		if(source.isBlank())
+			return false;
+		String normalized = source.toLowerCase();
+		boolean hasNonVersionChange = normalized.contains("+ ") || normalized.contains("- ") || normalized.contains("@@") || normalized.contains("if(") || normalized.contains("function ") || normalized.contains("class ") || normalized.contains("const ") || normalized.contains("let ") || normalized.contains("public ") || normalized.contains("private ") || normalized.contains("return ") || normalized.contains("import ") || normalized.contains("export ");
+		String versionPattern = "[0-9]+\\.[0-9]+\\.[0-9]+";
+		boolean hasVersionChange = Pattern.compile(versionPattern).matcher(normalized).find();
+		return hasVersionChange && !hasNonVersionChange;
 	}
 
 	public static String extractMarkdownSummary(String content)
