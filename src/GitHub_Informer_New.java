@@ -775,9 +775,9 @@ public class GitHub_Informer_New {
 				// Keep default as comment so existing behavior remains backward-compatible.
 				String threadStorageMode = defaultIfBlank((String) System.getenv("CLIQ_THREAD_STORAGE_MODE"), "comment").trim().toLowerCase();
 				String projectOwnerRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_OWNER"), "");
-				String projectNumberRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_NUMBER"), "");
+				String projectNumberRaw = defaultIfBlank((String) System.getenv("PROJECT_NUMBER"), defaultIfBlank((String) System.getenv("GITHUB_PROJECT_NUMBER"), ""));
 				String projectIdRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_ID"), "");
-				String projectThreadFieldIdRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_ID"), "");
+				String projectThreadFieldIdRaw = defaultIfBlank((String) System.getenv("PROJECT_THREAD_FIELD_ID"), defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_ID"), ""));
 				String projectThreadFieldNameRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_NAME"), "Cliq Thread ID");
 				String storageToken = githubToken;
 				if("project".equals(threadStorageMode))
@@ -1503,7 +1503,7 @@ public class GitHub_Informer_New {
 			String fieldName = defaultIfBlank(projectThreadFieldNameRaw, "Cliq Thread ID").trim();
 			if(configuredProjectId.isBlank() && (owner.isBlank() || projectNumberText.isBlank()))
 			{
-				debug("Project storage is not configured: set GITHUB_PROJECT_ID or both GITHUB_PROJECT_OWNER and GITHUB_PROJECT_NUMBER.");
+				debug("Project storage is not configured: set GITHUB_PROJECT_ID or both GITHUB_PROJECT_OWNER and PROJECT_NUMBER.");
 				return null;
 			}
 
@@ -1891,7 +1891,8 @@ public class GitHub_Informer_New {
 
 		String checkName = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
 		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
-		String checkToken = defaultIfBlank((String) System.getenv("PROJECT_TOKEN"), githubToken);
+		String projectToken = defaultIfBlank((String) System.getenv("PROJECT_TOKEN"), "");
+		String checkToken = defaultIfBlank(githubToken, projectToken);
 
 		if(checkToken != null && !checkToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 		{
@@ -1905,7 +1906,7 @@ public class GitHub_Informer_New {
 
 		if(!decision.passed)
 		{
-			String prCommentToken = defaultIfBlank((String) System.getenv("PROJECT_TOKEN"), githubToken);
+			String prCommentToken = defaultIfBlank(githubToken, projectToken);
 			ArrayList<String> issueComments = decision.issueComments == null ? new ArrayList<String>() : decision.issueComments;
 			debug("AI review extracted issues count=" + issueComments.size());
 			int postedIssueComments = 0;
