@@ -19,40 +19,27 @@ Two posting modes are supported:
 
 ### Where to set bot or user notification mode
 
-Set this in your workflow file: `.github/workflows/CliqConnector.yml`.
+This must be configured as a **GitHub Repository Variable**, not hardcoded in the workflow YAML.
 
-You can provide these values in **either** of these two ways:
-
-1. **GitHub Variables** (recommended)
-2. **Directly in the workflow YAML**
-
-Use the job-level `env` keys:
+Use the workflow env to read the value from the variable:
 
 ```yaml
 env:
-  CLIQ_NOTIFICATION_MODE: ${{ vars.CLIQ_NOTIFICATION_MODE || 'bot' }}
-  CLIQ_BOT_UNIQUE_NAME: ${{ vars.CLIQ_BOT_UNIQUE_NAME || 'githubnotification' }}
+  CLIQ_NOTIFICATION_MODE: ${{ vars.CLIQ_NOTIFICATION_MODE }}
+  CLIQ_BOT_UNIQUE_NAME: ${{ vars.CLIQ_BOT_UNIQUE_NAME }}
 ```
 
 - Set `CLIQ_NOTIFICATION_MODE` to `user` for normal webhook/user mode.
 - Set `CLIQ_NOTIFICATION_MODE` to `bot` for bot notification mode.
 - **`CLIQ_BOT_UNIQUE_NAME` is required when mode is `bot`.**
 
-Option 1: GitHub Variables (recommended)
+Set these in GitHub repository settings:
 
 1. In GitHub repository settings, go to `Secrets and variables` -> `Actions` -> `Variables`.
 2. Create **`CLIQ_NOTIFICATION_MODE`** with value **`user`** or **`bot`**.
 3. If mode is `bot`, create **`CLIQ_BOT_UNIQUE_NAME`** with your actual bot unique name.
 
-Option 2: Directly in `CliqConnector.yml`
-
-```yaml
-env:
-  CLIQ_NOTIFICATION_MODE: bot
-  CLIQ_BOT_UNIQUE_NAME: githubnotification
-```
-
-Use this if you want fixed values in the workflow file itself.
+Do not add these values directly in `.github/workflows/CliqConnector.yml`.
 
 ### Bot mode setup
 
@@ -141,19 +128,46 @@ Create GitHub classic token for `PROJECT_TOKEN`:
 3. Select scopes:
   - **`repo`**
   - **`project`**
-4. Copy the token and save it as repository secret **`PROJECT_TOKEN`**
+4. Copy the token and save it as a **repository variable** named **`PROJECT_TOKEN`**
 
-Required configuration:
+Required configuration for thread reply mode:
 
-- Secret: **`PROJECT_TOKEN`**
+- Variable: **`PROJECT_TOKEN`**
   - Use a classic PAT with **`repo`** and **`project`** scopes.
-- Env: **`CLIQ_THREAD_STORAGE_MODE=project`**
-- Env: **`GITHUB_PROJECT_OWNER=<owner login>`**
-- Env: **`GITHUB_PROJECT_NUMBER=<project number>`**
-- Env: **`GITHUB_PROJECT_THREAD_FIELD_ID=<field identifier>`**
+- Variable: **`CLIQ_THREAD_STORAGE_MODE=project`**
+- Variable: **`GITHUB_PROJECT_OWNER=<owner login>`**
+- Variable: **`GITHUB_PROJECT_NUMBER=<project number>`**
+- Variable: **`GITHUB_PROJECT_THREAD_FIELD_ID=<field identifier>`**
   - Can be either:
     - numeric field identifier from the Project field settings URL, or
     - GraphQL field node id (`PVTF_*`).
+
+For a normal channel reply, **`GITHUB_PROJECT_NUMBER`** and **`GITHUB_PROJECT_THREAD_FIELD_ID`** are not required.
+
+Only the items below are user-configured values that must be added in GitHub repo variables:
+
+- `PROJECT_TOKEN`
+- `CLIQ_THREAD_STORAGE_MODE`
+- `GITHUB_PROJECT_OWNER`
+- `GITHUB_PROJECT_NUMBER` (only for thread reply mode)
+- `GITHUB_PROJECT_THREAD_FIELD_ID` (only for thread reply mode)
+- `CLIQ_NOTIFICATION_MODE`
+- `CLIQ_BOT_UNIQUE_NAME` (only for bot mode)
+
+The values `github.repository_owner`, `github.repository`, and `github.event.pull_request.number` are GitHub runtime values and do not need to be entered by the user.
+
+### First-time setup order
+
+For a new repository, use this order:
+
+1. Add the required repository variables and secrets.
+2. Commit and push the workflow file.
+3. Run the workflow once so the GitHub status check is created.
+4. Then add the branch protection or ruleset and require the AI Review Gate check.
+
+This order matters because GitHub cannot require a status check before that check has been created by the workflow.
+
+If you do not want merge-blocking behavior, the branch protection rule is optional. If you want the AI Review Gate to block merges until the check passes, the required rule must be configured in GitHub after the workflow has run at least once.
 
 Behavior:
 
@@ -262,6 +276,8 @@ Go to the Actions tab of the repository to view the message status.
 
 You can enable an AI review gate for pull requests. The action can run against OpenAI, Claude, or Gemini.
 
+For exact PR comment formatting and one-issue-per-comment rules, see [docs/AI-Review-Comment-Construction.md](docs/AI-Review-Comment-Construction.md).
+
 - If the AI decision is pass, the check passes and no PR comment is added.
 - If the AI decision is fail (or the AI call fails), the check fails, a PR comment is added, and a failure message is posted to the Cliq PR thread.
 
@@ -338,6 +354,10 @@ ai-review-model: gemini-1.5-pro
 ```
 
 ### Branch Protection
+
+This is required for enforcement. The AI Review Gate check must be added as a **required status check** in GitHub repository Rules / Branch Protection.
+
+This is not a workflow variable and not something to add in the YAML. It is a GitHub repository setting that blocks merge until the check passes.
 
 To enforce mentor approval policy, add the check name from **`ai-review-check-name`** (default: **`AI Review Gate`**) as a **required status check** in branch protection.
 
