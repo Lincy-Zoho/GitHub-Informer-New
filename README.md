@@ -142,11 +142,11 @@ Create GitHub classic token for `PROJECT_TOKEN`:
 3. Select scopes:
   - **`repo`**
   - **`project`**
-4. Copy the token and save it as a **repository variable** named **`PROJECT_TOKEN`**
+4. Copy the token and save it as an **environment secret** named **`PROJECT_TOKEN`** in the `cliq-production` environment.
 
 Required configuration for thread reply mode:
 
-- Variable: **`PROJECT_TOKEN`**
+- Secret: **`PROJECT_TOKEN`**
   - Use a classic PAT with **`repo`** and **`project`** scopes.
 - Variable: **`CLIQ_THREAD_STORAGE_MODE=project`**
 - Variable: **`GITHUB_PROJECT_OWNER=<owner login>`**
@@ -160,13 +160,21 @@ For a normal channel reply, **`PROJECT_NUMBER`** and **`PROJECT_THREAD_FIELD_ID`
 
 Only the items below are user-configured values that must be added in GitHub repo variables:
 
-- `PROJECT_TOKEN`
 - `CLIQ_THREAD_STORAGE_MODE`
 - `GITHUB_PROJECT_OWNER`
 - `PROJECT_NUMBER` (only for thread reply mode)
 - `PROJECT_THREAD_FIELD_ID` (only for thread reply mode)
 - `CLIQ_NOTIFICATION_MODE`
 - `CLIQ_BOT_UNIQUE_NAME` (only for bot mode)
+- `AI_REVIEW_ENABLED`
+- `AI_REVIEW_SERVICE`
+- `AI_REVIEW_MODEL`
+
+The secret values are:
+
+- `PROJECT_TOKEN`
+- `ENDPOINT`
+- `AI_REVIEW_TOKEN` (only if AI review is enabled)
 
 The values `github.repository_owner`, `github.repository`, and `github.event.pull_request.number` are GitHub runtime values and do not need to be entered by the user.
 
@@ -185,23 +193,27 @@ If you do not want merge-blocking behavior, the branch protection rule is option
 
 ### VIII. Setup steps for first-time configuration
 
-1. Go to your repository and open **Settings** → **Secrets and variables** → **Actions**.
-2. Add the required repository secrets:
+1. Go to your repository and open **Settings** → **Environments** → `cliq-production` → **Secrets**.
+2. Add the required environment secrets:
+   - `PROJECT_TOKEN`
    - `ENDPOINT`
    - `AI_REVIEW_TOKEN` (only if AI review is enabled)
-3. Add the required repository variables:
+3. Go to **Settings** → **Secrets and variables** → **Actions** → **Variables**.
+4. Add the required repository variables:
    - `CLIQ_NOTIFICATION_MODE`
    - `CLIQ_BOT_UNIQUE_NAME` (only for bot mode)
    - `CLIQ_THREAD_STORAGE_MODE`
    - `GITHUB_PROJECT_OWNER`
    - `PROJECT_NUMBER` (only for thread reply mode)
    - `PROJECT_THREAD_FIELD_ID` (only for thread reply mode)
-   - `PROJECT_TOKEN`
-4. Commit and push the workflow file.
-5. Open the **Actions** tab and run the workflow once to create the status check.
-6. Go to **Settings** → **Rules** or **Branch protection** in GitHub.
-7. Enable **Require status checks to pass** and choose the AI Review Gate check.
-8. Save the rule.
+   - `AI_REVIEW_ENABLED`
+   - `AI_REVIEW_SERVICE`
+   - `AI_REVIEW_MODEL`
+5. Commit and push the workflow file.
+6. Open the **Actions** tab and run the workflow once to create the status check.
+7. Go to **Settings** → **Rules** or **Branch protection** in GitHub.
+8. Enable **Require status checks to pass** and choose the AI Review Gate check.
+9. Save the rule.
 
 The branch rule is not set in the workflow YAML. It is created in GitHub after the workflow has produced the status check.
 
