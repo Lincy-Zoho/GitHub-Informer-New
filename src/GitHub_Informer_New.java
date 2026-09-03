@@ -1865,6 +1865,7 @@ public class GitHub_Informer_New {
 		public String summary;
 		public String reason;
 		public String details;
+		public ArrayList<String> issues;
 	}
 
 	public static void handleAiReviewGate(String repository, String prNumber, String eventNameRaw, String actionRaw, String prLabelsRaw, String pullRequestTitle, String pullRequestBody, String pullRequestUrl, String pullRequestDiffUrl, String pullRequestBaseSha, String pullRequestHeadSha, String githubToken, String cliqEndpoint, String cliqThreadId, String imageUrl)
@@ -2004,7 +2005,7 @@ public class GitHub_Informer_New {
 					details = "1. No detailed issues were returned by the AI response.";
 				String reason = defaultIfBlank(structured.reason, passed ? "AI review passed." : "AI review did not pass the gate.");
 				AiReviewDecision decision = new AiReviewDecision(passed, status, summary, details, reason);
-				decision.issueComments = extractIssueCommentsFromAiContent(content, aiResponse.body);
+				decision.issueComments = structured.issues == null ? new ArrayList<String>() : structured.issues;
 				if("PARTIAL".equals(status))
 					return decision;
 				if(!passed)
@@ -2416,6 +2417,7 @@ public class GitHub_Informer_New {
 			result.details = extractStructuredIssueText(trimmed);
 			if(result.details == null || result.details.isBlank())
 				result.details = formatAiReviewDetails(trimmed);
+			result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed);
 			return result;
 		}
 		Matcher lineStatus = Pattern.compile("(?im)^\\s*(?:status|result|verdict|decision|outcome)\\s*[:=]\\s*(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\\b").matcher(trimmed);
@@ -2425,6 +2427,7 @@ public class GitHub_Informer_New {
 			result.summary = extractLine(trimmed, "SUMMARY");
 			result.reason = extractLine(trimmed, "REASON");
 			result.details = formatAiReviewDetails(trimmed);
+			result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed);
 			return result;
 		}
 		return null;
