@@ -1923,8 +1923,10 @@ public class GitHub_Informer_New {
 					System.err.println("AI review failure PR comment skipped: missing github token.");
 				}
 			}
-
-			postAiFailureToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, failureMessage);
+			String cliqFailureMessage = "AI review failed.";
+			if(pullRequestUrl != null && !pullRequestUrl.isBlank())
+				cliqFailureMessage = cliqFailureMessage + "\nPR: " + pullRequestUrl;
+			postAiFailureToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, cliqFailureMessage);
 		}
 	}
 
@@ -1987,7 +1989,7 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Return JSON only in a single object with the exact schema below. Never return markdown, never wrap in code fences, never add extra text before or after the JSON. Use this schema exactly: {\"status\": \"PASS|FAIL|PARTIAL\", \"summary\": \"short summary\", \"reason\": \"why this status was chosen\", \"issues\": [{\"file\": \"path/to/file\", \"line\": \"n/a or number\", \"issue\": \"short issue description\", \"fix\": \"recommended fix\"}]}. Return every blocking issue you find so each issue can be posted as its own PR comment. Make each issue concise so the full JSON stays small enough to avoid truncation. PASS means no blocking problems. FAIL means a blocking issue was found. PARTIAL means the AI could not fully assess the change or the result is incomplete, so it should block the merge. If there is no code behavior change, return PASS with a short summary. If the PR description is weak or blank, ignore it and judge the actual diff. Do not invent issues for harmless version bumps. If you cannot determine a line number, use \"n/a\". If there are no issues, set \"issues\": [].";
+		String systemPrompt = "You are a strict PR reviewer. Return JSON only in a single object with the exact schema below. Never return markdown, never wrap in code fences, never add extra text before or after the JSON. Use this schema exactly: {\"status\": \"PASS|FAIL|PARTIAL\", \"summary\": \"short summary\", \"reason\": \"why this status was chosen\", \"issues\": [{\"file\": \"path/to/file\", \"line\": \"n/a or number\", \"issue\": \"short issue description\", \"fix\": \"recommended fix\"}]}. Return every blocking issue you find so each issue can be posted as its own PR comment. Make each issue concise so the full JSON stays small enough to avoid truncation. PASS means no blocking problems. FAIL means a blocking issue was found. PARTIAL means the AI could not fully assess the change or the result is incomplete, so it should block the merge. If there is no code behavior change, return PASS with a short summary. If the PR description is weak or blank, ignore it and judge the actual diff. Never treat insecure code as PASS just because it is labeled intentional, test-only, or demonstration content; if vulnerabilities are present in the diff, return FAIL with issues. Do not invent issues for harmless version bumps. If you cannot determine a line number, use \"n/a\". If there are no issues, set \"issues\": [].";
 
 		try
 		{
