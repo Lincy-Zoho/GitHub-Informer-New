@@ -2390,18 +2390,16 @@ public class GitHub_Informer_New {
 			source = jsonUnescape(source.substring(1, source.length() - 1));
 		String trimmed = source.trim();
 		StructuredAiReviewResult result = new StructuredAiReviewResult();
-		Matcher statusLine = Pattern.compile("(?is)\"?(?:status|result|verdict|decision|outcome)\"?\\s*[:=]\\s*\"?(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\"?").matcher(trimmed);
-		if(statusLine.find())
+		result.status = extractJsonStringField(trimmed, "status");
+		if(result.status == null || result.status.isBlank())
+			result.status = extractJsonStringField(trimmed, "result");
+		if(result.status == null || result.status.isBlank())
+			result.status = extractJsonStringField(trimmed, "verdict");
+		if(result.status == null || result.status.isBlank())
 		{
-			result.status = statusLine.group(1).trim();
-		}
-		else
-		{
-			result.status = extractJsonStringField(trimmed, "status");
-			if(result.status == null || result.status.isBlank())
-				result.status = extractJsonStringField(trimmed, "result");
-			if(result.status == null || result.status.isBlank())
-				result.status = extractJsonStringField(trimmed, "verdict");
+			Matcher statusLine = Pattern.compile("(?is)(?:^|[\\{\\[,\\s])(?:\"?(?:status|result|verdict|decision|outcome)\"?\s*[:=]\s*)\"?(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\"?").matcher(trimmed);
+			if(statusLine.find())
+				result.status = statusLine.group(1).trim();
 		}
 		if(result.status != null && !result.status.isBlank())
 		{
