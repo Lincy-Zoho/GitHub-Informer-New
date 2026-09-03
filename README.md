@@ -41,6 +41,24 @@ Set these in GitHub repository settings:
 
 Do not add these values directly in `.github/workflows/CliqConnector.yml`.
 
+### Workflow file location
+
+Add the GitHub Actions workflow file in your consuming repository at:
+
+```text
+.github/workflows/CliqConnector.yml
+```
+
+If the `.github/workflows` folder does not exist, create it first.
+
+The workflow file should be copied from the template repository or created in that exact path in the target repository.
+
+The reusable action source code is in the public action repository here:
+
+```text
+https://github.com/Lincy-Zoho/GitHub-Informer-New/blob/main/src/GitHub_Informer_New.java
+```
+
 ### II. Bot mode setup
 
 If you want **bot notification mode**, configure:
@@ -169,7 +187,7 @@ This order matters because GitHub cannot require a status check before that chec
 
 If you do not want merge-blocking behavior, the branch protection rule is optional. If you want the AI Review Gate to block merges until the check passes, the required rule must be configured in GitHub after the workflow has run at least once.
 
-### VII. Numbered setup steps
+### VII. Setup steps for first-time configuration
 
 1. Go to your repository and open **Settings** → **Secrets and variables** → **Actions**.
 2. Add the required repository secrets:
