@@ -2004,7 +2004,7 @@ public class GitHub_Informer_New {
 				return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", provider + " returned empty content.", "The AI provider returned an empty response; the merge is blocked.");
 			String relaxedContent = content.replace("\\\"", "\"");
 
-			StructuredAiReviewResult structured = parseStructuredAiReview(content, aiResponse.body);
+			StructuredAiReviewResult structured = parseStructuredAiReview(content, aiResponse.body, diff);
 			if(structured != null && structured.status != null && !structured.status.isBlank())
 			{
 				String status = structured.status.trim().toUpperCase();
@@ -2413,7 +2413,7 @@ public class GitHub_Informer_New {
 		return source;
 	}
 
-	public static StructuredAiReviewResult parseStructuredAiReview(String content, String rawBody)
+	public static StructuredAiReviewResult parseStructuredAiReview(String content, String rawBody, String diffText)
 	{
 		String source = defaultIfBlank(content, defaultIfBlank(rawBody, ""));
 		source = jsonUnescape(normalizeEscapedMarkdownText(source));
@@ -2471,9 +2471,9 @@ public class GitHub_Informer_New {
 				result.details = extractStructuredIssueText(relaxed);
 			if(result.details == null || result.details.isBlank())
 				result.details = formatAiReviewDetails(trimmed);
-			result.issues = extractIssueCommentsFromAiContent(relaxed, relaxed);
+			result.issues = extractIssueCommentsFromAiContent(relaxed, relaxed, diffText);
 			if(result.issues == null || result.issues.isEmpty())
-				result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed);
+				result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed, diffText);
 			debug("Parsed AI response issues count=" + result.issues.size());
 			return result;
 		}
@@ -2484,7 +2484,7 @@ public class GitHub_Informer_New {
 			result.summary = extractLine(trimmed, "SUMMARY");
 			result.reason = extractLine(trimmed, "REASON");
 			result.details = formatAiReviewDetails(trimmed);
-			result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed);
+			result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed, diffText);
 			debug("Parsed AI response issues count=" + result.issues.size());
 			return result;
 		}
@@ -2510,7 +2510,7 @@ public class GitHub_Informer_New {
 		return String.join("\n", issueTexts);
 	}
 
-	public static ArrayList<String> extractIssueCommentsFromAiContent(String content, String rawBody)
+	public static ArrayList<String> extractIssueCommentsFromAiContent(String content, String rawBody, String diffText)
 	{
 		String source = normalizeEscapedMarkdownText(defaultIfBlank(content, defaultIfBlank(rawBody, "")));
 		source = jsonUnescape(source).replace("\\\"", "\"");
@@ -2526,15 +2526,132 @@ public class GitHub_Informer_New {
 			line = jsonUnescape(defaultIfBlank(line, "n/a"));
 			String issue = jsonUnescape(defaultIfBlank(itemMatcher.group(4), "No issue provided."));
 			String fix = jsonUnescape(defaultIfBlank(itemMatcher.group(5), "No fix provided."));
+			String diffSnippet = findDiffSnippetForIssue(diffText, file, line);
 			StringBuilder msg = new StringBuilder();
 			msg.append("### AI Review Finding\n\n");
 			msg.append("**File:** ").append(file).append("\n");
 			msg.append("**Line:** ").append(line).append("\n");
 			msg.append("**Issue:** ").append(issue).append("\n");
 			msg.append("**Fix:** ").append(fix).append("\n");
+			if(diffSnippet != null && !diffSnippet.isBlank())
+			{
+				msg.append("**Diff:**\n```diff\n");
+				msg.append(trimTo(diffSnippet, 1500)).append("\n");
+				msg.append("```\n");
+			}
 			comments.add(msg.toString());
 		}
 		return comments;
+	}
+
+	public static String findDiffSnippetForIssue(String diffText, String issueFileRaw, String issueLineRaw)
+	{
+		if(diffText == null || diffText.isBlank() || issueFileRaw == null || issueFileRaw.isBlank())
+			return "";
+		int issueLine;
+		try
+		{
+			issueLine = Integer.parseInt(defaultIfBlank(issueLineRaw, "").trim());
+		}
+		catch(Exception e)
+		{
+			return "";
+		}
+		if(issueLine <= 0)
+			return "";
+
+		String targetFile = normalizePathForDiffMatch(issueFileRaw);
+		String[] lines = normalizeEscapedMarkdownText(diffText).split("\n");
+		boolean inTargetFile = false;
+		int newLinePointer = -1;
+
+		for(int i = 0; i < lines.length; i++)
+		{
+			String line = lines[i];
+			if(line.startsWith("diff --git "))
+			{
+				inTargetFile = diffHeaderMatchesFile(line, targetFile);
+				newLinePointer = -1;
+				continue;
+			}
+			if(!inTargetFile)
+				continue;
+			if(line.startsWith("@@ "))
+			{
+				Matcher hunkMatcher = Pattern.compile("^@@\\s+-\\d+(?:,\\d+)?\\s+\\+(\\d+)(?:,\\d+)?\\s+@@").matcher(line);
+				if(hunkMatcher.find())
+				{
+					try
+					{
+						newLinePointer = Integer.parseInt(hunkMatcher.group(1)) - 1;
+					}
+					catch(Exception e)
+					{
+						newLinePointer = -1;
+					}
+				}
+				continue;
+			}
+			if(newLinePointer < 0)
+				continue;
+
+			boolean isFileHeader = line.startsWith("+++") || line.startsWith("---");
+			if(isFileHeader)
+				continue;
+
+			char prefix = line.isEmpty() ? ' ' : line.charAt(0);
+			if(prefix == '+')
+				newLinePointer++;
+			else if(prefix == ' ')
+				newLinePointer++;
+			else if(prefix == '-')
+			{
+				// Removed lines do not advance the new-file line pointer.
+			}
+			else
+				continue;
+
+			if(newLinePointer == issueLine)
+			{
+				int start = Math.max(0, i - 3);
+				int end = Math.min(lines.length - 1, i + 3);
+				StringBuilder snippet = new StringBuilder();
+				for(int j = start; j <= end; j++)
+				{
+					if(lines[j].startsWith("diff --git "))
+						continue;
+					snippet.append(lines[j]).append("\n");
+				}
+				return snippet.toString().trim();
+			}
+		}
+
+		return "";
+	}
+
+	public static boolean diffHeaderMatchesFile(String diffHeader, String normalizedTargetFile)
+	{
+		if(diffHeader == null || diffHeader.isBlank() || normalizedTargetFile == null || normalizedTargetFile.isBlank())
+			return false;
+		Matcher matcher = Pattern.compile("^diff --git a/(.+) b/(.+)$").matcher(diffHeader.trim());
+		if(!matcher.find())
+			return false;
+		String rightPath = normalizePathForDiffMatch(defaultIfBlank(matcher.group(2), ""));
+		if(rightPath.equalsIgnoreCase(normalizedTargetFile))
+			return true;
+		return rightPath.endsWith("/" + normalizedTargetFile);
+	}
+
+	public static String normalizePathForDiffMatch(String rawPath)
+	{
+		String value = defaultIfBlank(rawPath, "").trim().replace('\\', '/');
+		if(value.startsWith("./"))
+			value = value.substring(2);
+		if(value.startsWith("a/"))
+			value = value.substring(2);
+		if(value.startsWith("b/"))
+			value = value.substring(2);
+		return value;
 	}
 
 	public static String normalizeEscapedMarkdownText(String raw)
