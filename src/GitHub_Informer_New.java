@@ -2591,7 +2591,7 @@ public class GitHub_Informer_New {
 					issue = "Issue details were not provided.";
 				if(fix == null || fix.isBlank())
 					fix = "Review and update this code path to remove the issue.";
-				String diffSnippet = findDiffSnippetForIssue(diffText, file, line);
+				String diffSnippet = findDiffSnippetForIssue(diffText, file, line, diffLine);
 				if((diffSnippet == null || diffSnippet.isBlank()) && diffLine != null && !diffLine.isBlank())
 					diffSnippet = "+ " + diffLine;
 				comments.add(buildAiIssueCommentMarkdown(file, line, issue, fix, diffSnippet));
@@ -2609,7 +2609,7 @@ public class GitHub_Informer_New {
 			String issue = jsonUnescape(defaultIfBlank(legacyMatcher.group(4), "No issue provided."));
 			String diffLine = jsonUnescape(defaultIfBlank(legacyMatcher.group(5), ""));
 			String fix = jsonUnescape(defaultIfBlank(legacyMatcher.group(6), "No fix provided."));
-			String diffSnippet = findDiffSnippetForIssue(diffText, file, line);
+			String diffSnippet = findDiffSnippetForIssue(diffText, file, line, diffLine);
 			if((diffSnippet == null || diffSnippet.isBlank()) && diffLine != null && !diffLine.isBlank())
 				diffSnippet = "+ " + diffLine;
 			comments.add(buildAiIssueCommentMarkdown(file, line, issue, fix, diffSnippet));
@@ -2641,26 +2641,26 @@ public class GitHub_Informer_New {
 			.replace("{{diff_block}}", diffBlock);
 	}
 
-	public static String findDiffSnippetForIssue(String diffText, String issueFileRaw, String issueLineRaw)
+	public static String findDiffSnippetForIssue(String diffText, String issueFileRaw, String issueLineRaw, String diffLineOverride)
 	{
 		if(diffText == null || diffText.isBlank() || issueFileRaw == null || issueFileRaw.isBlank())
-			return "";
-		int issueLine;
-		try
-		{
-			issueLine = Integer.parseInt(defaultIfBlank(issueLineRaw, "").trim());
-		}
-		catch(Exception e)
-		{
-			return "";
-		}
-		if(issueLine <= 0)
 			return "";
 
 		String targetFile = normalizePathForDiffMatch(issueFileRaw);
 		String[] lines = normalizeEscapedMarkdownText(diffText).split("\n");
 		boolean inTargetFile = false;
 		int newLinePointer = -1;
+		int issueLine = -1;
+		try
+		{
+			String issueLineText = defaultIfBlank(issueLineRaw, "").trim();
+			if(!issueLineText.isBlank() && !"n/a".equalsIgnoreCase(issueLineText))
+				issueLine = Integer.parseInt(issueLineText);
+		}
+		catch(Exception e)
+		{
+			issueLine = -1;
+		}
 
 		for(int i = 0; i < lines.length; i++)
 		{
@@ -2703,12 +2703,12 @@ public class GitHub_Informer_New {
 				newLinePointer++;
 			else if(prefix == '-')
 			{
-				// Removed lines do not advance the new-file line pointer.
+				// removed lines do not advance the new-file line pointer, but keep the hunk context
 			}
 			else
 				continue;
 
-			if(newLinePointer == issueLine)
+			if(issueLine > 0 && newLinePointer == issueLine)
 			{
 				int start = Math.max(0, i - 3);
 				int end = Math.min(lines.length - 1, i + 3);
@@ -2719,7 +2719,41 @@ public class GitHub_Informer_New {
 						continue;
 					snippet.append(lines[j]).append("\n");
 				}
-				return snippet.toString().trim();
+				String candidate = snippet.toString().trim();
+				if(!candidate.isBlank())
+					return candidate;
+			}
+		}
+
+		if(diffLineOverride != null && !diffLineOverride.isBlank())
+		{
+			String needle = diffLineOverride.trim();
+			for(int i = 0; i < lines.length; i++)
+			{
+				String line = lines[i];
+				if(!inTargetFile && line.startsWith("diff --git "))
+				{
+					inTargetFile = diffHeaderMatchesFile(line, targetFile);
+					continue;
+				}
+				if(!inTargetFile)
+					continue;
+				String normalizedLine = line.trim();
+				if(normalizedLine.startsWith("+") && normalizedLine.length() > 1 && normalizedLine.substring(1).trim().contains(needle))
+				{
+					int start = Math.max(0, i - 3);
+					int end = Math.min(lines.length - 1, i + 3);
+					StringBuilder snippet = new StringBuilder();
+					for(int j = start; j <= end; j++)
+					{
+						if(lines[j].startsWith("diff --git "))
+							continue;
+						snippet.append(lines[j]).append("\n");
+					}
+					String candidate = snippet.toString().trim();
+					if(!candidate.isBlank())
+						return candidate;
+				}
 			}
 		}
 
