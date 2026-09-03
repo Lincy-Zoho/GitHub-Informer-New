@@ -2495,14 +2495,15 @@ public class GitHub_Informer_New {
 		if(json == null || json.isBlank())
 			return "";
 		ArrayList<String> issueTexts = new ArrayList<String>();
-		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|(-?\\d+))\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
 		Matcher itemMatcher = itemPattern.matcher(json);
 		while(itemMatcher.find())
 		{
 			String file = jsonUnescape(itemMatcher.group(1));
-			String line = jsonUnescape(itemMatcher.group(2));
-			String issue = jsonUnescape(itemMatcher.group(3));
-			String fix = jsonUnescape(itemMatcher.group(4));
+			String line = defaultIfBlank(itemMatcher.group(2), itemMatcher.group(3));
+			line = jsonUnescape(defaultIfBlank(line, "n/a"));
+			String issue = jsonUnescape(itemMatcher.group(4));
+			String fix = jsonUnescape(itemMatcher.group(5));
 			issueTexts.add("FILE: " + defaultIfBlank(file, "n/a") + " | LINE: " + defaultIfBlank(line, "n/a") + " | ISSUE: " + defaultIfBlank(issue, "No issue provided.") + " | FIX: " + defaultIfBlank(fix, "No fix provided."));
 		}
 		return String.join("\n", issueTexts);
@@ -2515,14 +2516,15 @@ public class GitHub_Informer_New {
 		if(source == null || source.isBlank())
 			return new ArrayList<String>();
 		ArrayList<String> comments = new ArrayList<String>();
-		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|(-?\\d+))\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
 		Matcher itemMatcher = itemPattern.matcher(source);
 		while(itemMatcher.find())
 		{
 			String file = jsonUnescape(defaultIfBlank(itemMatcher.group(1), "n/a"));
-			String line = jsonUnescape(defaultIfBlank(itemMatcher.group(2), "n/a"));
-			String issue = jsonUnescape(defaultIfBlank(itemMatcher.group(3), "No issue provided."));
-			String fix = jsonUnescape(defaultIfBlank(itemMatcher.group(4), "No fix provided."));
+			String line = defaultIfBlank(itemMatcher.group(2), itemMatcher.group(3));
+			line = jsonUnescape(defaultIfBlank(line, "n/a"));
+			String issue = jsonUnescape(defaultIfBlank(itemMatcher.group(4), "No issue provided."));
+			String fix = jsonUnescape(defaultIfBlank(itemMatcher.group(5), "No fix provided."));
 			StringBuilder msg = new StringBuilder();
 			msg.append("### AI Review Finding\n\n");
 			msg.append("**File:** ").append(file).append("\n");
