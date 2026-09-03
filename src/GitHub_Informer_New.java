@@ -1897,31 +1897,39 @@ public class GitHub_Informer_New {
 
 		if(!decision.passed)
 		{
+			String prCommentToken = defaultIfBlank((String) System.getenv("PROJECT_TOKEN"), githubToken);
 			ArrayList<String> issueComments = decision.issueComments == null ? new ArrayList<String>() : decision.issueComments;
 			debug("AI review extracted issues count=" + issueComments.size());
+			int postedIssueComments = 0;
 			if(issueComments != null && !issueComments.isEmpty())
 			{
-				int postedIssueComments = 0;
 				for(String issueComment : issueComments)
 				{
-					if(githubToken != null && !githubToken.isBlank())
+					if(prCommentToken != null && !prCommentToken.isBlank())
 					{
-						postPullRequestComment(repository, prNumber, githubToken, issueComment);
-						postedIssueComments++;
+						if(postPullRequestComment(repository, prNumber, prCommentToken, issueComment))
+							postedIssueComments++;
 					}
 				}
-				debug("AI review posted issue comments count=" + postedIssueComments);
+				debug("AI review posted issue comments count=" + postedIssueComments + "/" + issueComments.size());
 			}
 			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
 			if(issueComments == null || issueComments.isEmpty())
 			{
-				if(githubToken != null && !githubToken.isBlank())
+				if(prCommentToken != null && !prCommentToken.isBlank())
 				{
-					postPullRequestComment(repository, prNumber, githubToken, failureMessage);
+					postPullRequestComment(repository, prNumber, prCommentToken, failureMessage);
 				}
 				else
 				{
 					System.err.println("AI review failure PR comment skipped: missing github token.");
+				}
+			}
+			else if(postedIssueComments == 0)
+			{
+				if(prCommentToken != null && !prCommentToken.isBlank())
+				{
+					postPullRequestComment(repository, prNumber, prCommentToken, failureMessage);
 				}
 			}
 			String cliqFailureMessage = "AI review failed.";
@@ -2695,7 +2703,7 @@ public class GitHub_Informer_New {
 		return msg.toString();
 	}
 
-	public static void postPullRequestComment(String repository, String prNumber, String githubToken, String commentBody)
+	public static boolean postPullRequestComment(String repository, String prNumber, String githubToken, String commentBody)
 	{
 		try
 		{
@@ -2704,14 +2712,40 @@ public class GitHub_Informer_New {
 			headers.put("Accept", "application/vnd.github+json");
 			headers.put("Authorization", "Bearer " + githubToken);
 			headers.put("Content-Type", "application/json");
-			HttpResult response = sendHttpRequest("POST", "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments", payload, headers);
-			if(response.status < 200 || response.status > 299)
-				System.err.println("Failed to post AI review PR comment: status=" + response.status + ", body=" + preview(response.body));
+			String endpoint = "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments";
+			int maxAttempts = 3;
+			for(int attempt = 1; attempt <= maxAttempts; attempt++)
+			{
+				HttpResult response = sendHttpRequest("POST", endpoint, payload, headers);
+				if(response.status >= 200 && response.status <= 299)
+					return true;
+				String bodyPreview = preview(response.body);
+				boolean retryable = response.status == 429
+					|| (response.status == 403 && defaultIfBlank(response.body, "").toLowerCase().contains("secondary rate"))
+					|| (response.status == 422 && defaultIfBlank(response.body, "").toLowerCase().contains("abuse"));
+				if(!retryable || attempt == maxAttempts)
+				{
+					System.err.println("Failed to post AI review PR comment: status=" + response.status + ", body=" + bodyPreview);
+					return false;
+				}
+				try
+				{
+					Thread.sleep(800L * attempt);
+				}
+				catch(InterruptedException ie)
+				{
+					Thread.currentThread().interrupt();
+					System.err.println("Failed to post AI review PR comment: interrupted during retry wait.");
+					return false;
+				}
+			}
 		}
 		catch(Exception e)
 		{
 			System.err.println("Failed to post AI review PR comment: " + e.getMessage());
+			return false;
 		}
+		return false;
 	}
 
 	public static void postAiFailureToCliqThread(String cliqEndpoint, String cliqThreadId, String imageUrl, String failureMessage)
