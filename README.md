@@ -169,6 +169,28 @@ This order matters because GitHub cannot require a status check before that chec
 
 If you do not want merge-blocking behavior, the branch protection rule is optional. If you want the AI Review Gate to block merges until the check passes, the required rule must be configured in GitHub after the workflow has run at least once.
 
+### Numbered setup steps
+
+1. Go to your repository and open **Settings** → **Secrets and variables** → **Actions**.
+2. Add the required repository secrets:
+   - `ENDPOINT`
+   - `AI_REVIEW_TOKEN` (only if AI review is enabled)
+3. Add the required repository variables:
+   - `CLIQ_NOTIFICATION_MODE`
+   - `CLIQ_BOT_UNIQUE_NAME` (only for bot mode)
+   - `CLIQ_THREAD_STORAGE_MODE`
+   - `GITHUB_PROJECT_OWNER`
+   - `GITHUB_PROJECT_NUMBER` (only for thread reply mode)
+   - `GITHUB_PROJECT_THREAD_FIELD_ID` (only for thread reply mode)
+   - `PROJECT_TOKEN`
+4. Commit and push the workflow file.
+5. Open the **Actions** tab and run the workflow once to create the status check.
+6. Go to **Settings** → **Rules** or **Branch protection** in GitHub.
+7. Enable **Require status checks to pass** and choose the AI Review Gate check.
+8. Save the rule.
+
+The branch rule is not set in the workflow YAML. It is created in GitHub after the workflow has produced the status check.
+
 Behavior:
 
 1. Action resolves the PR item in the configured Project V2.
