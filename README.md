@@ -150,21 +150,21 @@ Required configuration for thread reply mode:
   - Use a classic PAT with **`repo`** and **`project`** scopes.
 - Variable: **`CLIQ_THREAD_STORAGE_MODE=project`**
 - Variable: **`GITHUB_PROJECT_OWNER=<owner login>`**
-- Variable: **`GITHUB_PROJECT_NUMBER=<project number>`**
-- Variable: **`GITHUB_PROJECT_THREAD_FIELD_ID=<field identifier>`**
+- Variable: **`PROJECT_NUMBER=<project number>`**
+- Variable: **`PROJECT_THREAD_FIELD_ID=<field identifier>`**
   - Can be either:
     - numeric field identifier from the Project field settings URL, or
     - GraphQL field node id (`PVTF_*`).
 
-For a normal channel reply, **`GITHUB_PROJECT_NUMBER`** and **`GITHUB_PROJECT_THREAD_FIELD_ID`** are not required.
+For a normal channel reply, **`PROJECT_NUMBER`** and **`PROJECT_THREAD_FIELD_ID`** are not required.
 
 Only the items below are user-configured values that must be added in GitHub repo variables:
 
 - `PROJECT_TOKEN`
 - `CLIQ_THREAD_STORAGE_MODE`
 - `GITHUB_PROJECT_OWNER`
-- `GITHUB_PROJECT_NUMBER` (only for thread reply mode)
-- `GITHUB_PROJECT_THREAD_FIELD_ID` (only for thread reply mode)
+- `PROJECT_NUMBER` (only for thread reply mode)
+- `PROJECT_THREAD_FIELD_ID` (only for thread reply mode)
 - `CLIQ_NOTIFICATION_MODE`
 - `CLIQ_BOT_UNIQUE_NAME` (only for bot mode)
 
@@ -194,8 +194,8 @@ If you do not want merge-blocking behavior, the branch protection rule is option
    - `CLIQ_BOT_UNIQUE_NAME` (only for bot mode)
    - `CLIQ_THREAD_STORAGE_MODE`
    - `GITHUB_PROJECT_OWNER`
-   - `GITHUB_PROJECT_NUMBER` (only for thread reply mode)
-   - `GITHUB_PROJECT_THREAD_FIELD_ID` (only for thread reply mode)
+   - `PROJECT_NUMBER` (only for thread reply mode)
+   - `PROJECT_THREAD_FIELD_ID` (only for thread reply mode)
    - `PROJECT_TOKEN`
 4. Commit and push the workflow file.
 5. Open the **Actions** tab and run the workflow once to create the status check.
