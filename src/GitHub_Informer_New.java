@@ -1897,13 +1897,19 @@ public class GitHub_Informer_New {
 		if(!decision.passed)
 		{
 			ArrayList<String> issueComments = decision.issueComments == null ? new ArrayList<String>() : decision.issueComments;
+			debug("AI review extracted issues count=" + issueComments.size());
 			if(issueComments != null && !issueComments.isEmpty())
 			{
+				int postedIssueComments = 0;
 				for(String issueComment : issueComments)
 				{
 					if(githubToken != null && !githubToken.isBlank())
+					{
 						postPullRequestComment(repository, prNumber, githubToken, issueComment);
+						postedIssueComments++;
+					}
 				}
+				debug("AI review posted issue comments count=" + postedIssueComments);
 			}
 			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
 			if(issueComments == null || issueComments.isEmpty())
@@ -1981,7 +1987,7 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Return JSON only in a single object with the exact schema below. Never return markdown, never wrap in code fences, never add extra text before or after the JSON. Use this schema exactly: {\"status\": \"PASS|FAIL|PARTIAL\", \"summary\": \"short summary\", \"reason\": \"why this status was chosen\", \"issues\": [{\"file\": \"path/to/file\", \"line\": \"n/a or number\", \"issue\": \"short issue description\", \"fix\": \"recommended fix\"}]}. Keep the issues array compact and return at most 5 blocking issues. Make each issue concise so the full JSON stays small enough to avoid truncation. PASS means no blocking problems. FAIL means a blocking issue was found. PARTIAL means the AI could not fully assess the change or the result is incomplete, so it should block the merge. If there is no code behavior change, return PASS with a short summary. If the PR description is weak or blank, ignore it and judge the actual diff. Do not invent issues for harmless version bumps. If you cannot determine a line number, use \"n/a\". If there are no issues, set \"issues\": [].";
+		String systemPrompt = "You are a strict PR reviewer. Return JSON only in a single object with the exact schema below. Never return markdown, never wrap in code fences, never add extra text before or after the JSON. Use this schema exactly: {\"status\": \"PASS|FAIL|PARTIAL\", \"summary\": \"short summary\", \"reason\": \"why this status was chosen\", \"issues\": [{\"file\": \"path/to/file\", \"line\": \"n/a or number\", \"issue\": \"short issue description\", \"fix\": \"recommended fix\"}]}. Return every blocking issue you find so each issue can be posted as its own PR comment. Make each issue concise so the full JSON stays small enough to avoid truncation. PASS means no blocking problems. FAIL means a blocking issue was found. PARTIAL means the AI could not fully assess the change or the result is incomplete, so it should block the merge. If there is no code behavior change, return PASS with a short summary. If the PR description is weak or blank, ignore it and judge the actual diff. Do not invent issues for harmless version bumps. If you cannot determine a line number, use \"n/a\". If there are no issues, set \"issues\": [].";
 
 		try
 		{
@@ -2391,6 +2397,7 @@ public class GitHub_Informer_New {
 			source = jsonUnescape(source.substring(1, source.length() - 1));
 		String trimmed = source.trim();
 		StructuredAiReviewResult result = new StructuredAiReviewResult();
+		result.issues = new ArrayList<String>();
 		result.status = extractJsonStringField(trimmed, "status");
 		if(result.status == null || result.status.isBlank())
 			result.status = extractJsonStringField(trimmed, "result");
@@ -2418,6 +2425,7 @@ public class GitHub_Informer_New {
 			if(result.details == null || result.details.isBlank())
 				result.details = formatAiReviewDetails(trimmed);
 			result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed);
+			debug("Parsed AI response issues count=" + result.issues.size());
 			return result;
 		}
 		Matcher lineStatus = Pattern.compile("(?im)^\\s*(?:status|result|verdict|decision|outcome)\\s*[:=]\\s*(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\\b").matcher(trimmed);
@@ -2428,6 +2436,7 @@ public class GitHub_Informer_New {
 			result.reason = extractLine(trimmed, "REASON");
 			result.details = formatAiReviewDetails(trimmed);
 			result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed);
+			debug("Parsed AI response issues count=" + result.issues.size());
 			return result;
 		}
 		return null;
