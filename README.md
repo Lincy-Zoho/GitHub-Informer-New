@@ -17,7 +17,7 @@ Two posting modes are supported:
   - **channel-auth-token**: Cliq OAuth bearer token
   - the **bot must already be created** by the user and **added to the target channel**
 
-### II. Where to set bot or user notification mode
+### I. Where to set bot or user notification mode
 
 This must be configured as a **GitHub Repository Variable**, not hardcoded in the workflow YAML.
 
@@ -41,7 +41,7 @@ Set these in GitHub repository settings:
 
 Do not add these values directly in `.github/workflows/CliqConnector.yml`.
 
-### I. Workflow file location
+### II. Workflow file location
 
 Add the GitHub Actions workflow file in your consuming repository at:
 
