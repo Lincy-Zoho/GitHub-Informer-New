@@ -45,9 +45,7 @@ Do not add these values directly in `.github/workflows/CliqConnector.yml`.
 
 Add the GitHub Actions workflow file in your consuming repository at:
 
-```text
-.github/workflows/CliqConnector.yml
-```
+- [.github/workflows/CliqConnector.yml](.github/workflows/CliqConnector.yml)
 
 If the `.github/workflows` folder does not exist, create it first.
 
@@ -55,9 +53,7 @@ The workflow file should be copied from the template repository or created in th
 
 The reusable action source code is in the public action repository here:
 
-```text
-https://github.com/Lincy-Zoho/GitHub-Informer-New/blob/main/src/GitHub_Informer_New.java
-```
+- [GitHub_Informer_New.java](https://github.com/Lincy-Zoho/GitHub-Informer-New/blob/main/src/GitHub_Informer_New.java)
 
 ### II. Bot mode setup
 
