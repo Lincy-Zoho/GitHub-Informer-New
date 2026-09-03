@@ -2403,7 +2403,15 @@ public class GitHub_Informer_New {
 					continue;
 				}
 				if(c == '"')
-					return jsonUnescape(escapedValue.toString());
+				{
+					int nextNonSpace = i + 1;
+					while(nextNonSpace < json.length() && Character.isWhitespace(json.charAt(nextNonSpace)))
+						nextNonSpace++;
+					if(nextNonSpace >= json.length() || json.charAt(nextNonSpace) == ',' || json.charAt(nextNonSpace) == '}' || json.charAt(nextNonSpace) == ']')
+						return jsonUnescape(escapedValue.toString());
+					escapedValue.append(c);
+					continue;
+				}
 				escapedValue.append(c);
 			}
 
@@ -2662,6 +2670,83 @@ public class GitHub_Informer_New {
 			issueLine = -1;
 		}
 
+		String fallbackFileHunk = "";
+		for(int i = 0; i < lines.length; i++)
+		{
+			String line = lines[i];
+			if(line.startsWith("diff --git "))
+			{
+				inTargetFile = diffHeaderMatchesFile(line, targetFile);
+				newLinePointer = -1;
+				if(inTargetFile)
+				{
+					StringBuilder hunk = new StringBuilder();
+					for(int j = i; j < lines.length && !lines[j].startsWith("diff --git "); j++)
+					{
+						if(j == i)
+							continue;
+						if(lines[j].startsWith("@@ "))
+							break;
+						if(!lines[j].startsWith("--- ") && !lines[j].startsWith("+++ "))
+							hunk.append(lines[j]).append("\n");
+					}
+					if(!hunk.toString().trim().isBlank())
+						fallbackFileHunk = hunk.toString().trim();
+				}
+				continue;
+			}
+			if(!inTargetFile)
+				continue;
+			if(line.startsWith("@@ "))
+			{
+				Matcher hunkMatcher = Pattern.compile("^@@\\s+-\\d+(?:,\\d+)?\\s+\\+(\\d+)(?:,\\d+)?\\s+@@").matcher(line);
+				if(hunkMatcher.find())
+				{
+					try
+					{
+						newLinePointer = Integer.parseInt(hunkMatcher.group(1)) - 1;
+					}
+					catch(Exception e)
+					{
+						newLinePointer = -1;
+					}
+				}
+				continue;
+			}
+			if(newLinePointer < 0)
+				continue;
+			boolean isFileHeader = line.startsWith("+++") || line.startsWith("---");
+			if(isFileHeader)
+				continue;
+			char prefix = line.isEmpty() ? ' ' : line.charAt(0);
+			if(prefix == '+')
+				newLinePointer++;
+			else if(prefix == ' ')
+				newLinePointer++;
+			else if(prefix == '-')
+			{
+				// removed lines do not advance the new-file line pointer, but keep the hunk context
+			}
+			else
+				continue;
+
+			if(issueLine > 0 && newLinePointer == issueLine)
+			{
+				int start = Math.max(0, i - 4);
+				int end = Math.min(lines.length - 1, i + 4);
+				StringBuilder snippet = new StringBuilder();
+				for(int j = start; j <= end; j++)
+				{
+					if(lines[j].startsWith("diff --git "))
+						continue;
+					snippet.append(lines[j]).append("\n");
+				}
+				String candidate = snippet.toString().trim();
+				if(!candidate.isBlank())
+					return candidate;
+			}
+		}
+
 		if(diffLineOverride != null && !diffLineOverride.isBlank())
 		{
 			String needle = diffLineOverride.trim();
@@ -2695,69 +2780,8 @@ public class GitHub_Informer_New {
 			}
 		}
 
-		for(int i = 0; i < lines.length; i++)
-		{
-			String line = lines[i];
-			if(line.startsWith("diff --git "))
-			{
-				inTargetFile = diffHeaderMatchesFile(line, targetFile);
-				newLinePointer = -1;
-				continue;
-			}
-			if(!inTargetFile)
-				continue;
-			if(line.startsWith("@@ "))
-			{
-				Matcher hunkMatcher = Pattern.compile("^@@\\s+-\\d+(?:,\\d+)?\\s+\\+(\\d+)(?:,\\d+)?\\s+@@").matcher(line);
-				if(hunkMatcher.find())
-				{
-					try
-					{
-						newLinePointer = Integer.parseInt(hunkMatcher.group(1)) - 1;
-					}
-					catch(Exception e)
-					{
-						newLinePointer = -1;
-					}
-				}
-				continue;
-			}
-			if(newLinePointer < 0)
-				continue;
-
-			boolean isFileHeader = line.startsWith("+++") || line.startsWith("---");
-			if(isFileHeader)
-				continue;
-
-			char prefix = line.isEmpty() ? ' ' : line.charAt(0);
-			if(prefix == '+')
-				newLinePointer++;
-			else if(prefix == ' ')
-				newLinePointer++;
-			else if(prefix == '-')
-			{
-				// removed lines do not advance the new-file line pointer, but keep the hunk context
-			}
-			else
-				continue;
-
-			if(issueLine > 0 && newLinePointer == issueLine)
-			{
-				int start = Math.max(0, i - 4);
-				int end = Math.min(lines.length - 1, i + 4);
-				StringBuilder snippet = new StringBuilder();
-				for(int j = start; j <= end; j++)
-				{
-					if(lines[j].startsWith("diff --git "))
-						continue;
-					snippet.append(lines[j]).append("\n");
-				}
-				String candidate = snippet.toString().trim();
-				if(!candidate.isBlank())
-					return candidate;
-			}
-		}
-
+		if(!fallbackFileHunk.isBlank())
+			return fallbackFileHunk;
 		return "";
 	}
 
