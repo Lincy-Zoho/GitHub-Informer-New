@@ -2562,16 +2562,53 @@ public class GitHub_Informer_New {
 		if(source == null || source.isBlank())
 			return new ArrayList<String>();
 		ArrayList<String> comments = new ArrayList<String>();
-		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|(-?\\d+))\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*(?:\"diff_line\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*)?\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
-		Matcher itemMatcher = itemPattern.matcher(source);
-		while(itemMatcher.find())
+		Pattern issuesArrayPattern = Pattern.compile("(?is)\"issues\"\\s*:\\s*\\[(.*?)]");
+		Matcher issuesArrayMatcher = issuesArrayPattern.matcher(source);
+		while(issuesArrayMatcher.find())
 		{
-			String file = jsonUnescape(defaultIfBlank(itemMatcher.group(1), "n/a"));
-			String line = defaultIfBlank(itemMatcher.group(2), itemMatcher.group(3));
+			String issuesBlock = issuesArrayMatcher.group(1);
+			Pattern issueObjectPattern = Pattern.compile("(?is)\\{.*?\\}");
+			Matcher issueObjectMatcher = issueObjectPattern.matcher(issuesBlock);
+			while(issueObjectMatcher.find())
+			{
+				String object = issueObjectMatcher.group();
+				String file = extractJsonStringField(object, "file");
+				String line = extractJsonStringField(object, "line");
+				String issue = extractJsonStringField(object, "issue");
+				String fix = extractJsonStringField(object, "fix");
+				String diffLine = extractJsonStringField(object, "diff_line");
+				if(diffLine == null || diffLine.isBlank())
+					diffLine = extractJsonStringField(object, "diff");
+				if(diffLine == null || diffLine.isBlank())
+					diffLine = extractJsonStringField(object, "recommendation");
+				if(file == null && issue == null && fix == null)
+					continue;
+				if(file == null || file.isBlank())
+					file = "n/a";
+				if(line == null || line.isBlank())
+					line = "n/a";
+				if(issue == null || issue.isBlank())
+					issue = "Issue details were not provided.";
+				if(fix == null || fix.isBlank())
+					fix = "Review and update this code path to remove the issue.";
+				String diffSnippet = findDiffSnippetForIssue(diffText, file, line);
+				if((diffSnippet == null || diffSnippet.isBlank()) && diffLine != null && !diffLine.isBlank())
+					diffSnippet = "+ " + diffLine;
+				comments.add(buildAiIssueCommentMarkdown(file, line, issue, fix, diffSnippet));
+			}
+		}
+		if(!comments.isEmpty())
+			return comments;
+		Pattern legacyPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|(-?\\d+))\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*(?:\"diff_line\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*)?\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+		Matcher legacyMatcher = legacyPattern.matcher(source);
+		while(legacyMatcher.find())
+		{
+			String file = jsonUnescape(defaultIfBlank(legacyMatcher.group(1), "n/a"));
+			String line = defaultIfBlank(legacyMatcher.group(2), legacyMatcher.group(3));
 			line = jsonUnescape(defaultIfBlank(line, "n/a"));
-			String issue = jsonUnescape(defaultIfBlank(itemMatcher.group(4), "No issue provided."));
-			String diffLine = jsonUnescape(defaultIfBlank(itemMatcher.group(5), ""));
-			String fix = jsonUnescape(defaultIfBlank(itemMatcher.group(6), "No fix provided."));
+			String issue = jsonUnescape(defaultIfBlank(legacyMatcher.group(4), "No issue provided."));
+			String diffLine = jsonUnescape(defaultIfBlank(legacyMatcher.group(5), ""));
+			String fix = jsonUnescape(defaultIfBlank(legacyMatcher.group(6), "No fix provided."));
 			String diffSnippet = findDiffSnippetForIssue(diffText, file, line);
 			if((diffSnippet == null || diffSnippet.isBlank()) && diffLine != null && !diffLine.isBlank())
 				diffSnippet = "+ " + diffLine;
