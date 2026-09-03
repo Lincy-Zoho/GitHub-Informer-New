@@ -2019,6 +2019,19 @@ public class GitHub_Informer_New {
 				return decision;
 			}
 
+			String statusFallback = extractJsonStringField(content, "status");
+			if(statusFallback == null || statusFallback.isBlank())
+				statusFallback = extractJsonStringField(content, "result");
+			if(statusFallback == null || statusFallback.isBlank())
+				statusFallback = extractJsonStringField(content, "verdict");
+			boolean hasEmptyIssues = Pattern.compile("(?is)\"issues\"\\s*:\\s*\\[\\s*\\]").matcher(content).find();
+			if(statusFallback != null && "PASS".equalsIgnoreCase(statusFallback.trim()) && hasEmptyIssues)
+			{
+				String summaryFallback = defaultIfBlank(extractJsonStringField(content, "summary"), "AI review passed");
+				String reasonFallback = defaultIfBlank(extractJsonStringField(content, "reason"), "AI review passed with no reported issues.");
+				return new AiReviewDecision(true, "PASS", summaryFallback, "No blocking issues were returned by the AI response.", reasonFallback);
+			}
+
 			return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", "AI response did not include a valid status. Response preview: " + trimTo(defaultIfBlank(content, aiResponse.body), 800), "The AI result was empty, malformed, or missing the required status field.");
 		}
 		catch(Exception e)
@@ -2405,7 +2418,7 @@ public class GitHub_Informer_New {
 			result.status = extractJsonStringField(trimmed, "verdict");
 		if(result.status == null || result.status.isBlank())
 		{
-			Matcher statusLine = Pattern.compile("(?is)(?:^|[\\{\\[,\\s])(?:\"?(?:status|result|verdict|decision|outcome)\"?\s*[:=]\s*)\"?(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\"?").matcher(trimmed);
+			Matcher statusLine = Pattern.compile("(?is)(?:^|[\\{\\[,\\s])(?:\"?(?:status|result|verdict|decision|outcome)\"?\\s*[:=]\\s*)\"?(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\"?").matcher(trimmed);
 			if(statusLine.find())
 				result.status = statusLine.group(1).trim();
 		}
