@@ -1884,15 +1884,16 @@ public class GitHub_Informer_New {
 
 		String checkName = defaultIfBlank(System.getenv("AI_REVIEW_CHECK_NAME"), "AI Review Gate");
 		AiReviewDecision decision = evaluateAiReviewDecision(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
+		String checkToken = defaultIfBlank((String) System.getenv("PROJECT_TOKEN"), githubToken);
 
-		if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
+		if(checkToken != null && !checkToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 		{
-			setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkName, decision.conclusion, decision.summary, decision.details);
-			setAiReviewCommitStatus(repository, pullRequestHeadSha, githubToken, checkName, decision.conclusion, decision.summary);
+			setAiReviewCheckRun(repository, pullRequestHeadSha, checkToken, checkName, decision.conclusion, decision.summary, decision.details);
+			setAiReviewCommitStatus(repository, pullRequestHeadSha, checkToken, checkName, decision.conclusion, decision.summary);
 		}
 		else
 		{
-			System.err.println("AI review check run skipped: missing github token or PR head sha.");
+			System.err.println("AI review check run skipped: missing check token or PR head sha.");
 		}
 
 		if(!decision.passed)
@@ -1998,7 +1999,7 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Return JSON only in a single object with the exact schema below. Never return markdown, never wrap in code fences, never add extra text before or after the JSON. Use this schema exactly: {\"status\": \"PASS|FAIL|PARTIAL\", \"summary\": \"short summary\", \"reason\": \"why this status was chosen\", \"issues\": [{\"file\": \"path/to/file\", \"line\": \"n/a or number\", \"issue\": \"short issue description\", \"fix\": \"recommended fix\"}]}. Return every blocking issue you find so each issue can be posted as its own PR comment. Make each issue concise so the full JSON stays small enough to avoid truncation. PASS means no blocking problems. FAIL means a blocking issue was found. PARTIAL means the AI could not fully assess the change or the result is incomplete, so it should block the merge. If there is no code behavior change, return PASS with a short summary. If the PR description is weak or blank, ignore it and judge the actual diff. Never treat insecure code as PASS just because it is labeled intentional, test-only, or demonstration content; if vulnerabilities are present in the diff, return FAIL with issues. Do not invent issues for harmless version bumps. If you cannot determine a line number, use \"n/a\". If there are no issues, set \"issues\": [].";
+		String systemPrompt = "You are a strict PR reviewer. Return JSON only in a single object with the exact schema below. Never return markdown, never wrap in code fences, never add extra text before or after the JSON. Use this schema exactly: {\"status\": \"PASS|FAIL|PARTIAL\", \"summary\": \"short summary\", \"reason\": \"why this status was chosen\", \"issues\": [{\"file\": \"path/to/file\", \"line\": \"n/a or number\", \"issue\": \"short issue description\", \"diff_line\": \"exact risky added/changed code line from diff (optional)\", \"fix\": \"recommended fix\"}]}. Return every blocking issue you find so each issue can be posted as its own PR comment. Make each issue concise so the full JSON stays small enough to avoid truncation. PASS means no blocking problems. FAIL means a blocking issue was found. PARTIAL means the AI could not fully assess the change or the result is incomplete, so it should block the merge. If there is no code behavior change, return PASS with a short summary. If the PR description is weak or blank, ignore it and judge the actual diff. Never treat insecure code as PASS just because it is labeled intentional, test-only, or demonstration content; if vulnerabilities are present in the diff, return FAIL with issues. Do not invent issues for harmless version bumps. If you cannot determine a line number, use \"n/a\". If there are no issues, set \"issues\": [].";
 
 		try
 		{
@@ -2504,7 +2505,7 @@ public class GitHub_Informer_New {
 		if(json == null || json.isBlank())
 			return "";
 		ArrayList<String> issueTexts = new ArrayList<String>();
-		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|(-?\\d+))\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|(-?\\d+))\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*(?:\"diff_line\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*)?\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
 		Matcher itemMatcher = itemPattern.matcher(json);
 		while(itemMatcher.find())
 		{
@@ -2512,8 +2513,13 @@ public class GitHub_Informer_New {
 			String line = defaultIfBlank(itemMatcher.group(2), itemMatcher.group(3));
 			line = jsonUnescape(defaultIfBlank(line, "n/a"));
 			String issue = jsonUnescape(itemMatcher.group(4));
-			String fix = jsonUnescape(itemMatcher.group(5));
-			issueTexts.add("FILE: " + defaultIfBlank(file, "n/a") + " | LINE: " + defaultIfBlank(line, "n/a") + " | ISSUE: " + defaultIfBlank(issue, "No issue provided.") + " | FIX: " + defaultIfBlank(fix, "No fix provided."));
+			String diffLine = jsonUnescape(defaultIfBlank(itemMatcher.group(5), ""));
+			String fix = jsonUnescape(itemMatcher.group(6));
+			String text = "FILE: " + defaultIfBlank(file, "n/a") + " | LINE: " + defaultIfBlank(line, "n/a") + " | ISSUE: " + defaultIfBlank(issue, "No issue provided.");
+			if(diffLine != null && !diffLine.isBlank())
+				text = text + " | DIFF: " + diffLine;
+			text = text + " | FIX: " + defaultIfBlank(fix, "No fix provided.");
+			issueTexts.add(text);
 		}
 		return String.join("\n", issueTexts);
 	}
@@ -2525,7 +2531,7 @@ public class GitHub_Informer_New {
 		if(source == null || source.isBlank())
 			return new ArrayList<String>();
 		ArrayList<String> comments = new ArrayList<String>();
-		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|(-?\\d+))\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+		Pattern itemPattern = Pattern.compile("(?is)\\{\\s*\"file\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"line\"\\s*:\\s*(?:\"((?:\\\\.|[^\"\\\\])*)\"|(-?\\d+))\\s*,\\s*\"issue\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*(?:\"diff_line\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*)?\"fix\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
 		Matcher itemMatcher = itemPattern.matcher(source);
 		while(itemMatcher.find())
 		{
@@ -2533,8 +2539,11 @@ public class GitHub_Informer_New {
 			String line = defaultIfBlank(itemMatcher.group(2), itemMatcher.group(3));
 			line = jsonUnescape(defaultIfBlank(line, "n/a"));
 			String issue = jsonUnescape(defaultIfBlank(itemMatcher.group(4), "No issue provided."));
-			String fix = jsonUnescape(defaultIfBlank(itemMatcher.group(5), "No fix provided."));
+			String diffLine = jsonUnescape(defaultIfBlank(itemMatcher.group(5), ""));
+			String fix = jsonUnescape(defaultIfBlank(itemMatcher.group(6), "No fix provided."));
 			String diffSnippet = findDiffSnippetForIssue(diffText, file, line);
+			if((diffSnippet == null || diffSnippet.isBlank()) && diffLine != null && !diffLine.isBlank())
+				diffSnippet = "+ " + diffLine;
 			StringBuilder msg = new StringBuilder();
 			msg.append("### AI Review Finding\n\n");
 			msg.append("**File:** ").append(file).append("\n");
