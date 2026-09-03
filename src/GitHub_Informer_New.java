@@ -1980,7 +1980,7 @@ public class GitHub_Informer_New {
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
 		String model = resolveModelForProvider(provider, modelFromEnv);
 		String apiUrl = resolveApiUrlForProvider(provider, apiUrlFromEnv);
-		String systemPrompt = "You are a strict PR reviewer. Return JSON only in a single object with the exact schema below. Never return markdown, never wrap in code fences, never add extra text before or after the JSON. Use this schema exactly: {\"status\": \"PASS|FAIL|PARTIAL\", \"summary\": \"short summary\", \"reason\": \"why this status was chosen\", \"issues\": [{\"file\": \"path/to/file\", \"line\": \"n/a or number\", \"issue\": \"short issue description\", \"fix\": \"recommended fix\"}]}. PASS means no blocking problems. FAIL means a blocking issue was found. PARTIAL means the AI could not fully assess the change or the result is incomplete, so it should block the merge. If there is no code behavior change, return PASS with a short summary. If the PR description is weak or blank, ignore it and judge the actual diff. Do not invent issues for harmless version bumps. If you cannot determine a line number, use \"n/a\". If there are no issues, set \"issues\": [].";
+		String systemPrompt = "You are a strict PR reviewer. Return JSON only in a single object with the exact schema below. Never return markdown, never wrap in code fences, never add extra text before or after the JSON. Use this schema exactly: {\"status\": \"PASS|FAIL|PARTIAL\", \"summary\": \"short summary\", \"reason\": \"why this status was chosen\", \"issues\": [{\"file\": \"path/to/file\", \"line\": \"n/a or number\", \"issue\": \"short issue description\", \"fix\": \"recommended fix\"}]}. Keep the issues array compact and return at most 5 blocking issues. Make each issue concise so the full JSON stays small enough to avoid truncation. PASS means no blocking problems. FAIL means a blocking issue was found. PARTIAL means the AI could not fully assess the change or the result is incomplete, so it should block the merge. If there is no code behavior change, return PASS with a short summary. If the PR description is weak or blank, ignore it and judge the actual diff. Do not invent issues for harmless version bumps. If you cannot determine a line number, use \"n/a\". If there are no issues, set \"issues\": [].";
 
 		try
 		{
@@ -2006,7 +2006,7 @@ public class GitHub_Informer_New {
 				AiReviewDecision decision = new AiReviewDecision(passed, status, summary, details, reason);
 				decision.issueComments = extractIssueCommentsFromAiContent(content, aiResponse.body);
 				if("PARTIAL".equals(status))
-					return new AiReviewDecision(false, "PARTIAL", summary, details, reason);
+					return decision;
 				if(!passed)
 					return decision;
 				return decision;
@@ -2075,7 +2075,7 @@ public class GitHub_Informer_New {
 
 	public static HttpResult invokeOpenAiCompatible(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
-		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"temperature\":0.1,\"messages\":[{\"role\":\"system\",\"content\":\"" + jsonEscape(systemPrompt) + "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":2000,\"temperature\":0.1,\"messages\":[{\"role\":\"system\",\"content\":\"" + jsonEscape(systemPrompt) + "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		headers.put("Authorization", "Bearer " + token);
@@ -2084,7 +2084,7 @@ public class GitHub_Informer_New {
 
 	public static HttpResult invokeClaude(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
-		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":1200,\"temperature\":0.1,\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":2000,\"temperature\":0.1,\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		headers.put("x-api-key", token);
@@ -2106,7 +2106,7 @@ public class GitHub_Informer_New {
 		else
 			endpoint = endpoint + "?key=" + URLEncoder.encode(token, UTF_8);
 
-		String payload = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jsonEscape(systemPrompt) + "\"}]},\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(userPrompt) + "\"}]}],\"generationConfig\":{\"temperature\":0.1}}";
+		String payload = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jsonEscape(systemPrompt) + "\"}]},\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(userPrompt) + "\"}]}],\"generationConfig\":{\"temperature\":0.1,\"maxOutputTokens\":2000}}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		return sendHttpRequest("POST", endpoint, payload, headers);
@@ -2382,25 +2382,36 @@ public class GitHub_Informer_New {
 
 	public static StructuredAiReviewResult parseStructuredAiReview(String content, String rawBody)
 	{
-		String source = normalizeEscapedMarkdownText(defaultIfBlank(content, defaultIfBlank(rawBody, "")));
+		String source = defaultIfBlank(content, defaultIfBlank(rawBody, ""));
+		source = jsonUnescape(normalizeEscapedMarkdownText(source));
 		if(source == null || source.isBlank())
 			return null;
+		if(source.length() >= 2 && source.startsWith("\"") && source.endsWith("\""))
+			source = jsonUnescape(source.substring(1, source.length() - 1));
 		String trimmed = source.trim();
 		StructuredAiReviewResult result = new StructuredAiReviewResult();
-		result.status = extractJsonStringField(trimmed, "status");
-		if(result.status == null || result.status.isBlank())
-			result.status = extractJsonStringField(trimmed, "result");
-		if(result.status == null || result.status.isBlank())
-			result.status = extractJsonStringField(trimmed, "verdict");
-		if(result.status == null || result.status.isBlank())
+		Matcher statusLine = Pattern.compile("(?is)\"?(?:status|result|verdict|decision|outcome)\"?\\s*[:=]\\s*\"?(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\"?").matcher(trimmed);
+		if(statusLine.find())
 		{
-			Matcher statusLine = Pattern.compile("(?is)\"?(?:status|result|verdict|decision|outcome)\"?\\s*[:=]\\s*\"?(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\"?").matcher(trimmed);
-			if(statusLine.find())
-				result.status = statusLine.group(1).trim();
+			result.status = statusLine.group(1).trim();
+		}
+		else
+		{
+			result.status = extractJsonStringField(trimmed, "status");
+			if(result.status == null || result.status.isBlank())
+				result.status = extractJsonStringField(trimmed, "result");
+			if(result.status == null || result.status.isBlank())
+				result.status = extractJsonStringField(trimmed, "verdict");
 		}
 		if(result.status != null && !result.status.isBlank())
 		{
 			result.summary = extractJsonStringField(trimmed, "summary");
+			if(result.summary == null || result.summary.isBlank())
+			{
+				Matcher summaryLine = Pattern.compile("(?im)^\\s*summary\\s*[:=]\\s*(.+)$").matcher(trimmed);
+				if(summaryLine.find())
+					result.summary = summaryLine.group(1).trim();
+			}
 			result.reason = extractJsonStringField(trimmed, "reason");
 			if(result.reason == null || result.reason.isBlank())
 				result.reason = extractJsonStringField(trimmed, "message");
@@ -2409,14 +2420,13 @@ public class GitHub_Informer_New {
 				result.details = formatAiReviewDetails(trimmed);
 			return result;
 		}
-
-		Matcher statusLine = Pattern.compile("(?im)^\\s*(?:status|result|verdict|decision|outcome)\\s*[:=]\\s*(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\\b").matcher(source);
-		if(statusLine.find())
+		Matcher lineStatus = Pattern.compile("(?im)^\\s*(?:status|result|verdict|decision|outcome)\\s*[:=]\\s*(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\\b").matcher(trimmed);
+		if(lineStatus.find())
 		{
-			result.status = statusLine.group(1).trim().toUpperCase();
-			result.summary = extractLine(source, "SUMMARY");
-			result.reason = extractLine(source, "REASON");
-			result.details = formatAiReviewDetails(source);
+			result.status = lineStatus.group(1).trim().toUpperCase();
+			result.summary = extractLine(trimmed, "SUMMARY");
+			result.reason = extractLine(trimmed, "REASON");
+			result.details = formatAiReviewDetails(trimmed);
 			return result;
 		}
 		return null;
