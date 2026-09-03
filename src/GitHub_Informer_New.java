@@ -2538,7 +2538,27 @@ public class GitHub_Informer_New {
 
 	public static ArrayList<String> extractIssueCommentsFromAiContent(String content, String rawBody, String diffText)
 	{
-		String source = normalizeEscapedMarkdownText(defaultIfBlank(content, defaultIfBlank(rawBody, "")));
+		String[] candidates = new String[] {
+			defaultIfBlank(content, ""),
+			defaultIfBlank(rawBody, ""),
+			normalizeEscapedMarkdownText(defaultIfBlank(content, defaultIfBlank(rawBody, ""))),
+			defaultIfBlank(content, defaultIfBlank(rawBody, "")).replace("\\\"", "\""),
+			defaultIfBlank(content, defaultIfBlank(rawBody, "")).replace("\\n", "\n").replace("\\\"", "\"")
+		};
+		for(String rawCandidate : candidates)
+		{
+			String source = rawCandidate;
+			if(source == null || source.isBlank())
+				continue;
+			ArrayList<String> parsed = extractIssueCommentsFromAiContentAttempt(source, diffText);
+			if(parsed != null && !parsed.isEmpty())
+				return parsed;
+		}
+		return new ArrayList<String>();
+	}
+
+	public static ArrayList<String> extractIssueCommentsFromAiContentAttempt(String source, String diffText)
+	{
 		if(source == null || source.isBlank())
 			return new ArrayList<String>();
 		ArrayList<String> comments = new ArrayList<String>();
