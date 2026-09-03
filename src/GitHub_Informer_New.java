@@ -1999,6 +1999,7 @@ public class GitHub_Informer_New {
 			String content = normalizeEscapedMarkdownText(extractAiContent(aiResponse.body, provider));
 			if(content == null || content.isBlank())
 				return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", provider + " returned empty content.", "The AI provider returned an empty response; the merge is blocked.");
+			String relaxedContent = content.replace("\\\"", "\"");
 
 			StructuredAiReviewResult structured = parseStructuredAiReview(content, aiResponse.body);
 			if(structured != null && structured.status != null && !structured.status.isBlank())
@@ -2024,11 +2025,20 @@ public class GitHub_Informer_New {
 				statusFallback = extractJsonStringField(content, "result");
 			if(statusFallback == null || statusFallback.isBlank())
 				statusFallback = extractJsonStringField(content, "verdict");
-			boolean hasEmptyIssues = Pattern.compile("(?is)\"issues\"\\s*:\\s*\\[\\s*\\]").matcher(content).find();
+			if(statusFallback == null || statusFallback.isBlank())
+				statusFallback = extractJsonStringField(relaxedContent, "status");
+			if(statusFallback == null || statusFallback.isBlank())
+				statusFallback = extractJsonStringField(relaxedContent, "result");
+			if(statusFallback == null || statusFallback.isBlank())
+				statusFallback = extractJsonStringField(relaxedContent, "verdict");
+			boolean hasEmptyIssues = Pattern.compile("(?is)\"issues\"\\s*:\\s*\\[\\s*\\]").matcher(content).find()
+				|| Pattern.compile("(?is)\"issues\"\\s*:\\s*\\[\\s*\\]").matcher(relaxedContent).find();
 			if(statusFallback != null && "PASS".equalsIgnoreCase(statusFallback.trim()) && hasEmptyIssues)
 			{
-				String summaryFallback = defaultIfBlank(extractJsonStringField(content, "summary"), "AI review passed");
-				String reasonFallback = defaultIfBlank(extractJsonStringField(content, "reason"), "AI review passed with no reported issues.");
+				String summaryFallback = defaultIfBlank(extractJsonStringField(content, "summary"), extractJsonStringField(relaxedContent, "summary"));
+				summaryFallback = defaultIfBlank(summaryFallback, "AI review passed");
+				String reasonFallback = defaultIfBlank(extractJsonStringField(content, "reason"), extractJsonStringField(relaxedContent, "reason"));
+				reasonFallback = defaultIfBlank(reasonFallback, "AI review passed with no reported issues.");
 				return new AiReviewDecision(true, "PASS", summaryFallback, "No blocking issues were returned by the AI response.", reasonFallback);
 			}
 
@@ -2095,7 +2105,7 @@ public class GitHub_Informer_New {
 
 	public static HttpResult invokeOpenAiCompatible(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
-		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":2000,\"temperature\":0.1,\"messages\":[{\"role\":\"system\",\"content\":\"" + jsonEscape(systemPrompt) + "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":6000,\"temperature\":0.1,\"messages\":[{\"role\":\"system\",\"content\":\"" + jsonEscape(systemPrompt) + "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		headers.put("Authorization", "Bearer " + token);
@@ -2104,7 +2114,7 @@ public class GitHub_Informer_New {
 
 	public static HttpResult invokeClaude(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
-		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":2000,\"temperature\":0.1,\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":6000,\"temperature\":0.1,\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		headers.put("x-api-key", token);
@@ -2126,7 +2136,7 @@ public class GitHub_Informer_New {
 		else
 			endpoint = endpoint + "?key=" + URLEncoder.encode(token, UTF_8);
 
-		String payload = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jsonEscape(systemPrompt) + "\"}]},\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(userPrompt) + "\"}]}],\"generationConfig\":{\"temperature\":0.1,\"maxOutputTokens\":2000}}";
+		String payload = "{\"system_instruction\":{\"parts\":[{\"text\":\"" + jsonEscape(systemPrompt) + "\"}]},\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(userPrompt) + "\"}]}],\"generationConfig\":{\"temperature\":0.1,\"maxOutputTokens\":6000}}";
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		return sendHttpRequest("POST", endpoint, payload, headers);
@@ -2409,6 +2419,7 @@ public class GitHub_Informer_New {
 		if(source.length() >= 2 && source.startsWith("\"") && source.endsWith("\""))
 			source = jsonUnescape(source.substring(1, source.length() - 1));
 		String trimmed = source.trim();
+		String relaxed = trimmed.replace("\\\"", "\"");
 		StructuredAiReviewResult result = new StructuredAiReviewResult();
 		result.issues = new ArrayList<String>();
 		result.status = extractJsonStringField(trimmed, "status");
@@ -2417,14 +2428,28 @@ public class GitHub_Informer_New {
 		if(result.status == null || result.status.isBlank())
 			result.status = extractJsonStringField(trimmed, "verdict");
 		if(result.status == null || result.status.isBlank())
+			result.status = extractJsonStringField(relaxed, "status");
+		if(result.status == null || result.status.isBlank())
+			result.status = extractJsonStringField(relaxed, "result");
+		if(result.status == null || result.status.isBlank())
+			result.status = extractJsonStringField(relaxed, "verdict");
+		if(result.status == null || result.status.isBlank())
 		{
 			Matcher statusLine = Pattern.compile("(?is)(?:^|[\\{\\[,\\s])(?:\"?(?:status|result|verdict|decision|outcome)\"?\\s*[:=]\\s*)\"?(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\"?").matcher(trimmed);
 			if(statusLine.find())
 				result.status = statusLine.group(1).trim();
+			if(result.status == null || result.status.isBlank())
+			{
+				Matcher relaxedStatusLine = Pattern.compile("(?is)(?:^|[\\{\\[,\\s])(?:\"?(?:status|result|verdict|decision|outcome)\"?\\s*[:=]\\s*)\"?(PASS|FAIL|PARTIAL|FAILED|APPROVED|REJECTED)\"?").matcher(relaxed);
+				if(relaxedStatusLine.find())
+					result.status = relaxedStatusLine.group(1).trim();
+			}
 		}
 		if(result.status != null && !result.status.isBlank())
 		{
 			result.summary = extractJsonStringField(trimmed, "summary");
+			if(result.summary == null || result.summary.isBlank())
+				result.summary = extractJsonStringField(relaxed, "summary");
 			if(result.summary == null || result.summary.isBlank())
 			{
 				Matcher summaryLine = Pattern.compile("(?im)^\\s*summary\\s*[:=]\\s*(.+)$").matcher(trimmed);
@@ -2433,11 +2458,19 @@ public class GitHub_Informer_New {
 			}
 			result.reason = extractJsonStringField(trimmed, "reason");
 			if(result.reason == null || result.reason.isBlank())
+				result.reason = extractJsonStringField(relaxed, "reason");
+			if(result.reason == null || result.reason.isBlank())
 				result.reason = extractJsonStringField(trimmed, "message");
+			if(result.reason == null || result.reason.isBlank())
+				result.reason = extractJsonStringField(relaxed, "message");
 			result.details = extractStructuredIssueText(trimmed);
 			if(result.details == null || result.details.isBlank())
+				result.details = extractStructuredIssueText(relaxed);
+			if(result.details == null || result.details.isBlank())
 				result.details = formatAiReviewDetails(trimmed);
-			result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed);
+			result.issues = extractIssueCommentsFromAiContent(relaxed, relaxed);
+			if(result.issues == null || result.issues.isEmpty())
+				result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed);
 			debug("Parsed AI response issues count=" + result.issues.size());
 			return result;
 		}
@@ -2476,6 +2509,7 @@ public class GitHub_Informer_New {
 	public static ArrayList<String> extractIssueCommentsFromAiContent(String content, String rawBody)
 	{
 		String source = normalizeEscapedMarkdownText(defaultIfBlank(content, defaultIfBlank(rawBody, "")));
+		source = jsonUnescape(source).replace("\\\"", "\"");
 		if(source == null || source.isBlank())
 			return new ArrayList<String>();
 		ArrayList<String> comments = new ArrayList<String>();
