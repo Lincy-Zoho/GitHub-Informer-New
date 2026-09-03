@@ -20,6 +20,13 @@ import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 public class GitHub_Informer_New {
+	private static final String ISSUE_COMMENT_TEMPLATE = "### AI Review Finding\n\n"
+		+ "**File:** {{file}}\n"
+		+ "**Line:** {{line}}\n"
+		+ "**Issue:** {{issue}}\n"
+		+ "**Fix:** {{fix}}\n"
+		+ "{{diff_block}}";
+
 	public static void main(String args[]) {
 		System.out.println("Calling Cliq...");
 		Integer MAX_MESSAGE_LENGTH = 4096;
@@ -2425,7 +2432,7 @@ public class GitHub_Informer_New {
 	public static StructuredAiReviewResult parseStructuredAiReview(String content, String rawBody, String diffText)
 	{
 		String source = defaultIfBlank(content, defaultIfBlank(rawBody, ""));
-		source = jsonUnescape(normalizeEscapedMarkdownText(source));
+		source = normalizeEscapedMarkdownText(source);
 		if(source == null || source.isBlank())
 			return null;
 		if(source.length() >= 2 && source.startsWith("\"") && source.endsWith("\""))
@@ -2480,9 +2487,9 @@ public class GitHub_Informer_New {
 				result.details = extractStructuredIssueText(relaxed);
 			if(result.details == null || result.details.isBlank())
 				result.details = formatAiReviewDetails(trimmed);
-			result.issues = extractIssueCommentsFromAiContent(relaxed, relaxed, diffText);
+			result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed, diffText);
 			if(result.issues == null || result.issues.isEmpty())
-				result.issues = extractIssueCommentsFromAiContent(trimmed, trimmed, diffText);
+				result.issues = extractIssueCommentsFromAiContent(relaxed, relaxed, diffText);
 			debug("Parsed AI response issues count=" + result.issues.size());
 			return result;
 		}
@@ -2527,7 +2534,6 @@ public class GitHub_Informer_New {
 	public static ArrayList<String> extractIssueCommentsFromAiContent(String content, String rawBody, String diffText)
 	{
 		String source = normalizeEscapedMarkdownText(defaultIfBlank(content, defaultIfBlank(rawBody, "")));
-		source = jsonUnescape(source).replace("\\\"", "\"");
 		if(source == null || source.isBlank())
 			return new ArrayList<String>();
 		ArrayList<String> comments = new ArrayList<String>();
@@ -2544,21 +2550,28 @@ public class GitHub_Informer_New {
 			String diffSnippet = findDiffSnippetForIssue(diffText, file, line);
 			if((diffSnippet == null || diffSnippet.isBlank()) && diffLine != null && !diffLine.isBlank())
 				diffSnippet = "+ " + diffLine;
-			StringBuilder msg = new StringBuilder();
-			msg.append("### AI Review Finding\n\n");
-			msg.append("**File:** ").append(file).append("\n");
-			msg.append("**Line:** ").append(line).append("\n");
-			msg.append("**Issue:** ").append(issue).append("\n");
-			msg.append("**Fix:** ").append(fix).append("\n");
-			if(diffSnippet != null && !diffSnippet.isBlank())
-			{
-				msg.append("**Diff:**\n```diff\n");
-				msg.append(trimTo(diffSnippet, 1500)).append("\n");
-				msg.append("```\n");
-			}
-			comments.add(msg.toString());
+			comments.add(buildAiIssueCommentMarkdown(file, line, issue, fix, diffSnippet));
 		}
 		return comments;
+	}
+
+	public static String buildAiIssueCommentMarkdown(String file, String line, String issue, String fix, String diffSnippet)
+	{
+		String safeFile = defaultIfBlank(file, "n/a");
+		String safeLine = defaultIfBlank(line, "n/a");
+		String safeIssue = defaultIfBlank(issue, "No issue provided.");
+		String safeFix = defaultIfBlank(fix, "No fix provided.");
+		String diffBlock = "";
+		if(diffSnippet != null && !diffSnippet.isBlank())
+		{
+			diffBlock = "**Diff:**\n```diff\n" + trimTo(diffSnippet, 1500) + "\n```\n";
+		}
+		return ISSUE_COMMENT_TEMPLATE
+			.replace("{{file}}", safeFile)
+			.replace("{{line}}", safeLine)
+			.replace("{{issue}}", safeIssue)
+			.replace("{{fix}}", safeFix)
+			.replace("{{diff_block}}", diffBlock);
 	}
 
 	public static String findDiffSnippetForIssue(String diffText, String issueFileRaw, String issueLineRaw)
