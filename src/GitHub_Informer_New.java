@@ -2662,6 +2662,39 @@ public class GitHub_Informer_New {
 			issueLine = -1;
 		}
 
+		if(diffLineOverride != null && !diffLineOverride.isBlank())
+		{
+			String needle = diffLineOverride.trim();
+			for(int i = 0; i < lines.length; i++)
+			{
+				String line = lines[i];
+				if(line.startsWith("diff --git "))
+				{
+					inTargetFile = diffHeaderMatchesFile(line, targetFile);
+					newLinePointer = -1;
+					continue;
+				}
+				if(!inTargetFile)
+					continue;
+				String normalizedLine = line.trim();
+				if(normalizedLine.startsWith("+") && normalizedLine.length() > 1 && normalizedLine.substring(1).trim().contains(needle))
+				{
+					int start = Math.max(0, i - 4);
+					int end = Math.min(lines.length - 1, i + 4);
+					StringBuilder snippet = new StringBuilder();
+					for(int j = start; j <= end; j++)
+					{
+						if(lines[j].startsWith("diff --git "))
+							continue;
+						snippet.append(lines[j]).append("\n");
+					}
+					String candidate = snippet.toString().trim();
+					if(!candidate.isBlank())
+						return candidate;
+				}
+			}
+		}
+
 		for(int i = 0; i < lines.length; i++)
 		{
 			String line = lines[i];
@@ -2710,8 +2743,8 @@ public class GitHub_Informer_New {
 
 			if(issueLine > 0 && newLinePointer == issueLine)
 			{
-				int start = Math.max(0, i - 3);
-				int end = Math.min(lines.length - 1, i + 3);
+				int start = Math.max(0, i - 4);
+				int end = Math.min(lines.length - 1, i + 4);
 				StringBuilder snippet = new StringBuilder();
 				for(int j = start; j <= end; j++)
 				{
@@ -2722,38 +2755,6 @@ public class GitHub_Informer_New {
 				String candidate = snippet.toString().trim();
 				if(!candidate.isBlank())
 					return candidate;
-			}
-		}
-
-		if(diffLineOverride != null && !diffLineOverride.isBlank())
-		{
-			String needle = diffLineOverride.trim();
-			for(int i = 0; i < lines.length; i++)
-			{
-				String line = lines[i];
-				if(!inTargetFile && line.startsWith("diff --git "))
-				{
-					inTargetFile = diffHeaderMatchesFile(line, targetFile);
-					continue;
-				}
-				if(!inTargetFile)
-					continue;
-				String normalizedLine = line.trim();
-				if(normalizedLine.startsWith("+") && normalizedLine.length() > 1 && normalizedLine.substring(1).trim().contains(needle))
-				{
-					int start = Math.max(0, i - 3);
-					int end = Math.min(lines.length - 1, i + 3);
-					StringBuilder snippet = new StringBuilder();
-					for(int j = start; j <= end; j++)
-					{
-						if(lines[j].startsWith("diff --git "))
-							continue;
-						snippet.append(lines[j]).append("\n");
-					}
-					String candidate = snippet.toString().trim();
-					if(!candidate.isBlank())
-						return candidate;
-				}
 			}
 		}
 
