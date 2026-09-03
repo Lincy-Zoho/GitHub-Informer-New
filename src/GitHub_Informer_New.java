@@ -2599,6 +2599,8 @@ public class GitHub_Informer_New {
 					issue = "Issue details were not provided.";
 				if(fix == null || fix.isBlank())
 					fix = "Review and update this code path to remove the issue.";
+				if(diffText != null && !diffText.isBlank() && diffLine != null && !diffLine.isBlank() && !issueAnchorsToCurrentDiff(diffText, file, diffLine))
+					continue;
 				String diffSnippet = findDiffSnippetForIssue(diffText, file, line, diffLine);
 				if((diffSnippet == null || diffSnippet.isBlank()) && diffLine != null && !diffLine.isBlank())
 					diffSnippet = "+ " + diffLine;
@@ -2623,6 +2625,42 @@ public class GitHub_Informer_New {
 			comments.add(buildAiIssueCommentMarkdown(file, line, issue, fix, diffSnippet));
 		}
 		return comments;
+	}
+
+	public static boolean issueAnchorsToCurrentDiff(String diffText, String issueFileRaw, String diffLineRaw)
+	{
+		if(diffText == null || diffText.isBlank() || issueFileRaw == null || issueFileRaw.isBlank() || diffLineRaw == null || diffLineRaw.isBlank())
+			return true;
+
+		String targetFile = normalizePathForDiffMatch(issueFileRaw);
+		String[] lines = normalizeEscapedMarkdownText(diffText).split("\n");
+		String normalizedNeedle = jsonUnescape(diffLineRaw).trim();
+		String compactNeedle = normalizedNeedle.replaceAll("\\s+", " ").trim();
+		if(compactNeedle.isBlank())
+			return true;
+
+		boolean inTargetFile = false;
+		for(String line : lines)
+		{
+			if(line.startsWith("diff --git "))
+			{
+				inTargetFile = diffHeaderMatchesFile(line, targetFile);
+				continue;
+			}
+			if(!inTargetFile)
+				continue;
+			String candidate = line.trim();
+			if(candidate.startsWith("+") || candidate.startsWith("-"))
+			{
+				String stripped = candidate.substring(1).trim();
+				if(stripped.contains(normalizedNeedle) || stripped.contains(compactNeedle))
+					return true;
+				String compactStripped = stripped.replaceAll("\\s+", " ").trim();
+				if(compactStripped.contains(compactNeedle))
+					return true;
+			}
+		}
+		return false;
 	}
 
 	public static String buildAiIssueCommentMarkdown(String file, String line, String issue, String fix, String diffSnippet)
@@ -2732,16 +2770,7 @@ public class GitHub_Informer_New {
 
 			if(issueLine > 0 && newLinePointer == issueLine)
 			{
-				int start = Math.max(0, i - 4);
-				int end = Math.min(lines.length - 1, i + 4);
-				StringBuilder snippet = new StringBuilder();
-				for(int j = start; j <= end; j++)
-				{
-					if(lines[j].startsWith("diff --git "))
-						continue;
-					snippet.append(lines[j]).append("\n");
-				}
-				String candidate = snippet.toString().trim();
+				String candidate = extractCurrentHunk(lines, i);
 				if(!candidate.isBlank())
 					return candidate;
 			}
@@ -2764,16 +2793,7 @@ public class GitHub_Informer_New {
 				String normalizedLine = line.trim();
 				if(normalizedLine.startsWith("+") && normalizedLine.length() > 1 && normalizedLine.substring(1).trim().contains(needle))
 				{
-					int start = Math.max(0, i - 4);
-					int end = Math.min(lines.length - 1, i + 4);
-					StringBuilder snippet = new StringBuilder();
-					for(int j = start; j <= end; j++)
-					{
-						if(lines[j].startsWith("diff --git "))
-							continue;
-						snippet.append(lines[j]).append("\n");
-					}
-					String candidate = snippet.toString().trim();
+					String candidate = extractCurrentHunk(lines, i);
 					if(!candidate.isBlank())
 						return candidate;
 				}
@@ -2783,6 +2803,52 @@ public class GitHub_Informer_New {
 		if(!fallbackFileHunk.isBlank())
 			return fallbackFileHunk;
 		return "";
+	}
+
+	public static String extractCurrentHunk(String[] lines, int lineIndex)
+	{
+		if(lines == null || lineIndex < 0 || lineIndex >= lines.length)
+			return "";
+
+		int start = lineIndex;
+		while(start > 0)
+		{
+			if(lines[start].startsWith("@@ "))
+				break;
+			start--;
+		}
+		if(!lines[start].startsWith("@@ "))
+		{
+			start = Math.max(0, lineIndex - 12);
+		}
+
+		int end = lineIndex;
+		while(end < lines.length - 1)
+		{
+			if(lines[end].startsWith("diff --git "))
+				break;
+			if(lines[end].startsWith("@@ ") && end > lineIndex)
+				break;
+			end++;
+		}
+		if(end > lineIndex && lines[end].startsWith("@@ "))
+		{
+			end = end - 1;
+		}
+
+		StringBuilder snippet = new StringBuilder();
+		for(int j = start; j <= end; j++)
+		{
+			if(j < 0 || j >= lines.length)
+				continue;
+			if(lines[j].startsWith("diff --git "))
+				continue;
+			snippet.append(lines[j]).append("\n");
+		}
+		String candidate = snippet.toString().trim();
+		if(candidate.isBlank())
+			return "";
+		return candidate;
 	}
 
 	public static boolean diffHeaderMatchesFile(String diffHeader, String normalizedTargetFile)
