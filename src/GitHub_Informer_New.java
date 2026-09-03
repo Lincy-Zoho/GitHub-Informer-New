@@ -24,7 +24,7 @@ public class GitHub_Informer_New {
 		+ "**File:** {{file}}\n"
 		+ "**Line:** {{line}}\n"
 		+ "**Issue:** {{issue}}\n"
-		+ "**Fix:** {{fix}}\n"
+		+ "**Fix:** {{fix}}\n\n"
 		+ "{{diff_block}}";
 
 	public static void main(String args[]) {
@@ -1910,7 +1910,8 @@ public class GitHub_Informer_New {
 			ArrayList<String> issueComments = decision.issueComments == null ? new ArrayList<String>() : decision.issueComments;
 			debug("AI review extracted issues count=" + issueComments.size());
 			int postedIssueComments = 0;
-			if(issueComments != null && !issueComments.isEmpty())
+			boolean hasIssueCommentPayload = issueComments != null && !issueComments.isEmpty();
+			if(hasIssueCommentPayload)
 			{
 				for(String issueComment : issueComments)
 				{
@@ -1923,7 +1924,7 @@ public class GitHub_Informer_New {
 				debug("AI review posted issue comments count=" + postedIssueComments + "/" + issueComments.size());
 			}
 			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
-			if(issueComments == null || issueComments.isEmpty())
+			if(!hasIssueCommentPayload)
 			{
 				if(prCommentToken != null && !prCommentToken.isBlank())
 				{
@@ -1936,6 +1937,9 @@ public class GitHub_Informer_New {
 			}
 			else if(postedIssueComments == 0)
 			{
+				// Preserve the itemized issue-comment model. Only fall back to a single
+				// summary PR comment when the AI produced individual issues but none of
+				// those comments could be posted successfully.
 				if(prCommentToken != null && !prCommentToken.isBlank())
 				{
 					postPullRequestComment(repository, prNumber, prCommentToken, failureMessage);
@@ -2331,7 +2335,7 @@ public class GitHub_Informer_New {
 			return "";
 		String value = extractJsonStringField(body, "content");
 		if(value != null)
-			return value;
+			return normalizeEscapedMarkdownText(value);
 		return "";
 	}
 
@@ -2341,7 +2345,7 @@ public class GitHub_Informer_New {
 			return "";
 		String value = extractJsonStringField(body, "text");
 		if(value != null)
-			return value;
+			return normalizeEscapedMarkdownText(value);
 		return "";
 	}
 
@@ -2351,7 +2355,7 @@ public class GitHub_Informer_New {
 			return "";
 		String value = extractJsonStringField(body, "text");
 		if(value != null)
-			return value;
+			return normalizeEscapedMarkdownText(value);
 		return "";
 	}
 
@@ -2565,7 +2569,12 @@ public class GitHub_Informer_New {
 		String diffBlock = "";
 		if(diffSnippet != null && !diffSnippet.isBlank())
 		{
-			diffBlock = "**Diff:**\n```diff\n" + trimTo(diffSnippet, 1500) + "\n```\n";
+			diffBlock = "<details>\n"
+				+ "<summary><strong>View comparison</strong></summary>\n\n"
+				+ "```diff\n"
+				+ trimTo(diffSnippet, 1500)
+				+ "\n```\n"
+				+ "</details>\n";
 		}
 		return ISSUE_COMMENT_TEMPLATE
 			.replace("{{file}}", safeFile)
