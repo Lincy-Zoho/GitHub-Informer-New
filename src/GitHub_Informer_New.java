@@ -1888,6 +1888,7 @@ public class GitHub_Informer_New {
 		if(githubToken != null && !githubToken.isBlank() && pullRequestHeadSha != null && !pullRequestHeadSha.isBlank())
 		{
 			setAiReviewCheckRun(repository, pullRequestHeadSha, githubToken, checkName, decision.conclusion, decision.summary, decision.details);
+			setAiReviewCommitStatus(repository, pullRequestHeadSha, githubToken, checkName, decision.conclusion, decision.summary);
 		}
 		else
 		{
@@ -2647,6 +2648,39 @@ public class GitHub_Informer_New {
 		catch(Exception e)
 		{
 			System.err.println("Failed to set AI review check run: " + e.getMessage());
+		}
+	}
+
+	public static void setAiReviewCommitStatus(String repository, String headSha, String githubToken, String contextName, String conclusionRaw, String summary)
+	{
+		try
+		{
+			String normalizedConclusion = defaultIfBlank(conclusionRaw, "failure").trim().toLowerCase();
+			String state = "failure";
+			if("success".equals(normalizedConclusion) || "neutral".equals(normalizedConclusion) || "skipped".equals(normalizedConclusion))
+				state = "success";
+			else if("pending".equals(normalizedConclusion))
+				state = "pending";
+
+			String description = defaultIfBlank(summary, "AI review completed");
+			description = trimTo(description, 130).replace("\n", " ").replace("\r", " ");
+			String payload = "{"
+				+ "\"state\":\"" + jsonEscape(state) + "\"," 
+				+ "\"context\":\"" + jsonEscape(defaultIfBlank(contextName, "AI Review Gate")) + "\"," 
+				+ "\"description\":\"" + jsonEscape(description) + "\""
+				+ "}";
+
+			HashMap<String, String> headers = new HashMap<String, String>();
+			headers.put("Accept", "application/vnd.github+json");
+			headers.put("Authorization", "Bearer " + githubToken);
+			headers.put("Content-Type", "application/json");
+			HttpResult response = sendHttpRequest("POST", "https://api.github.com/repos/" + repository + "/statuses/" + headSha, payload, headers);
+			if(response.status < 200 || response.status > 299)
+				System.err.println("Failed to set AI review commit status: status=" + response.status + ", body=" + preview(response.body));
+		}
+		catch(Exception e)
+		{
+			System.err.println("Failed to set AI review commit status: " + e.getMessage());
 		}
 	}
 
