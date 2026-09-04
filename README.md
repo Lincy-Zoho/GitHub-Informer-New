@@ -17,7 +17,19 @@ Two posting modes are supported:
   - **channel-auth-token**: Cliq OAuth bearer token
   - the **bot must already be created** by the user and **added to the target channel**
 
-### I. Workflow file location
+### I. Initial setup order for a new repository
+
+For a new repository, use this order:
+
+1. Add the required repository variables.
+2. Add the required environment secrets.
+3. Commit and push the workflow file.
+4. Run the workflow once so the GitHub status check is created.
+5. Then add the branch protection or ruleset and require the AI Review Gate check.
+
+This order matters because GitHub cannot require a status check before that check has been created by the workflow.
+
+### II. Workflow file location
 
 Add the GitHub Actions workflow file in your consuming repository at:
 
@@ -31,7 +43,7 @@ The reusable action source code is in the public action repository here:
 
 - [GitHub_Informer_New.java](https://github.com/Lincy-Zoho/GitHub-Informer-New/blob/main/src/GitHub_Informer_New.java)
 
-### II. Where to set bot or user notification mode
+### III. Where to set bot or user notification mode
 
 This must be configured as a **GitHub Repository Variable**, not hardcoded in the workflow YAML.
 
@@ -55,7 +67,7 @@ Set these in GitHub repository settings:
 
 Do not add these values directly in `.github/workflows/CliqConnector.yml`.
 
-### III. Bot mode setup
+### IV. Bot mode setup
 
 If you want **bot notification mode**, configure:
 
@@ -77,7 +89,7 @@ In bot mode:
 - The workflow appends **`bot_unique_name`** automatically.
 - If **`CLIQ_BOT_UNIQUE_NAME`** is missing, workflow fails fast.
 
-### IV. User mode setup
+### V. User mode setup
 
 If you want normal user/webhook notification mode, configure:
 
@@ -110,7 +122,7 @@ Examples:
 - `https://cliq.zoho.com/api/v2/channelsbyname/GitHubupdates/message?zapikey=1001.xxxxx`
 - `https://cliq.zoho.in/api/v2/channelsbyname/GitHubupdates/message?zapikey=1001.xxxxx`
   
-## V. GitHub Secret for Channel Endpoint 🔗
+## VI. GitHub Secret for Channel Endpoint 🔗
 You must add **GitHub Secret** which contains the channel endpoint in the format 
 
 ```
@@ -131,7 +143,7 @@ and use the secret as the '**channel-endpoint**' input in the job of your workfl
         channel-endpoint: ${{ secrets.SECRET_NAME }}
 ```
 
-## VI. Store Cliq Thread ID in GitHub Project
+## VII. Store Cliq Thread ID in GitHub Project
 
 For PR events, you can store and reuse the Cliq thread ID in a GitHub Project V2 custom text field (recommended).
 
@@ -178,28 +190,10 @@ The secret values are:
 
 The values `github.repository_owner`, `github.repository`, and `github.event.pull_request.number` are GitHub runtime values and do not need to be entered by the user.
 
-### VII. First-time setup order
-
-For a new repository, use this order:
-
-1. Add the required repository variables and secrets.
-2. Commit and push the workflow file.
-3. Run the workflow once so the GitHub status check is created.
-4. Then add the branch protection or ruleset and require the AI Review Gate check.
-
-This order matters because GitHub cannot require a status check before that check has been created by the workflow.
-
-If you do not want merge-blocking behavior, the branch protection rule is optional. If you want the AI Review Gate to block merges until the check passes, the required rule must be configured in GitHub after the workflow has run at least once.
-
 ### VIII. Setup steps for first-time configuration
 
-1. Go to your repository and open **Settings** → **Environments** → `cliq-production` → **Secrets**.
-2. Add the required environment secrets:
-   - `PROJECT_TOKEN`
-   - `ENDPOINT`
-   - `AI_REVIEW_TOKEN` (only if AI review is enabled)
-3. Go to **Settings** → **Secrets and variables** → **Actions** → **Variables**.
-4. Add the required repository variables:
+1. Go to **Settings** → **Secrets and variables** → **Actions** → **Variables**.
+2. Add the required repository variables:
    - `CLIQ_NOTIFICATION_MODE`
    - `CLIQ_BOT_UNIQUE_NAME` (only for bot mode)
    - `CLIQ_THREAD_STORAGE_MODE`
@@ -209,6 +203,11 @@ If you do not want merge-blocking behavior, the branch protection rule is option
    - `AI_REVIEW_ENABLED`
    - `AI_REVIEW_SERVICE`
    - `AI_REVIEW_MODEL`
+3. Go to your repository and open **Settings** → **Environments** → `cliq-production` → **Secrets**.
+4. Add the required environment secrets:
+   - `PROJECT_TOKEN`
+   - `ENDPOINT`
+   - `AI_REVIEW_TOKEN` (only if AI review is enabled)
 5. Commit and push the workflow file.
 6. Open the **Actions** tab and run the workflow once to create the status check.
 7. Go to **Settings** → **Rules** or **Branch protection** in GitHub.
