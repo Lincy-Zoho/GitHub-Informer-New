@@ -198,8 +198,19 @@ The values `github.repository_owner`, `github.repository`, and `github.event.pul
 
 ### IX. Workflow File set up in target repository
 
-1. Create the workflow file at [.github/workflows/CliqConnector.yml](https://github.com/Lincy-Zoho/TemplateRepositoryNew).
-2. Commit and push the workflow file.
+Use this exact workflow file path in the target repository:
+
+- `.github/workflows/CliqConnector.yml`
+
+How to add it in GitHub:
+
+1. Open the target repository in GitHub.
+2. Click the `Add file` button or create the `.github/workflows` folder if it does not already exist.
+3. Create a file named `CliqConnector.yml` inside `.github/workflows/`.
+4. Copy the contents from the template repository or from the public template file.
+5. Commit and push the workflow file.
+
+The workflow file must be committed to the default branch or to the branch you are using for the PR run. After the workflow runs once, GitHub will create the status check context for the branch protection rule.
 
 The branch rule is not set in the workflow YAML. It is created in GitHub after the workflow has produced the status check.
 
