@@ -194,16 +194,16 @@ The values `github.repository_owner`, `github.repository`, and `github.event.pul
    - `PROJECT_TOKEN`
    - `ENDPOINT`
    - `AI_REVIEW_TOKEN` (only if AI review is enabled)
-5. Create the workflow file at [.github/workflows/CliqConnector.yml](.github/workflows/CliqConnector.yml).
-6. Commit and push the workflow file.
-7. Open the **Actions** tab and run the workflow once to create the status check.
-8. Go to **Settings** → **Rules** or **Branch protection** in GitHub.
-9. Enable **Require status checks to pass** and choose the AI Review Gate check.
-10. Save the rule.
+
+
+### IX. Workflow File set up in target repository
+
+1. Create the workflow file at [.github/workflows/CliqConnector.yml](https://github.com/Lincy-Zoho/TemplateRepositoryNew).
+2. Commit and push the workflow file.
 
 The branch rule is not set in the workflow YAML. It is created in GitHub after the workflow has produced the status check.
 
-### IX. GitHub branch rule / status check behavior
+### X. GitHub branch rule / status check behavior
 
 Important: GitHub branch protection is enforced by GitHub itself. The workflow cannot override a repository rule.
 
@@ -228,7 +228,7 @@ Behavior:
 
 If project mode is enabled and project field update fails, action logs the failure. Ensure **`PROJECT_TOKEN`**, **project owner/number**, and **field identifier** are correct.
 
-## IX. Custom Event Messages ⚙️
+## XI. Custom Event Messages ⚙️
 
 Suppose you need a notification in Cliq for only selected events or actions,
   - you may change the '**_on_**' key of the YAML File where the Action is called.
@@ -244,7 +244,7 @@ For ex: To set a custom message for a Pull Request event, you must define the in
   pull-request-message: 'A Pull Request has been Opened'
 ```
 
-## X. Default Message 📓
+## XII. Default Message 📓
 
 If you wish to add a single custom message for all kinds of events, you may use the '**default-message**'. 
 
@@ -254,7 +254,7 @@ For ex: To set a default custom message , you must define the _default-message_ 
   default-message: 'A (event) has been (action)'
 ```
 
-## XI. Shortcuts ⏩
+## XIII. Shortcuts ⏩
 
 We also provide several shortcuts to obtain the variables that you want to insert in the message, such as,
   - **(event)**: which will be replaced with the event that the workflow is triggered by
@@ -298,7 +298,7 @@ The GitHub events that trigger a workflow are listed below, among which all even
 |**pull_request_review_comment**| **pull_request_target**    | **push**                     | **registry_package**         | **release**                 |
 | **repository_dispatch**     | **schedule**                 | **status**                   | **watch**                    | **workflow_dispatch**       |
 
-## XII. Base YAML Code 🗒
+## XIV. Base YAML Code 🗒
 
 Don't worry about remembering a lot of stuff. Here is the minimal code that's required to start with. 
 
@@ -321,7 +321,7 @@ That's all! You will start getting notified for each event occurring in GitHub t
 
 Go to the Actions tab of the repository to view the message status.
 
-## XIII. AI Review Gate (OpenAI, Claude, Gemini)
+## XV. AI Review Gate (OpenAI, Claude, Gemini)
 
 You can enable an AI review gate for pull requests. The action can run against OpenAI, Claude, or Gemini.
 
@@ -330,7 +330,7 @@ For exact PR comment formatting and one-issue-per-comment rules, see [docs/AI-Re
 - If the AI decision is pass, the check passes and no PR comment is added.
 - If the AI decision is fail (or the AI call fails), the check fails, a PR comment is added, and a failure message is posted to the Cliq PR thread.
 
-### XIV. Required GitHub Workflow Permissions
+### XVI. Required GitHub Workflow Permissions
 
 Your workflow must include:
 
@@ -342,7 +342,7 @@ permissions:
   pull-requests: write
 ```
 
-### XV. Recommended Workflow Usage
+### XVII. Recommended Workflow Usage
 
 ```yaml
 name: PR AI Review Gate
@@ -374,7 +374,7 @@ jobs:
           ai-review-model: gpt-4.1-mini
 ```
 
-### XVI. Provider Configuration
+### XVIII. Provider Configuration
 
 Only the token should be stored as a secret. Endpoint and model can be plain workflow values.
 
@@ -402,7 +402,7 @@ ai-review-api-url: https://generativelanguage.googleapis.com/v1beta/models/gemin
 ai-review-model: gemini-1.5-pro
 ```
 
-### XVII. Branch Protection
+### XIX. Branch Protection
 
 This is required for enforcement. The AI Review Gate check must be added as a **required status check** in GitHub repository Rules / Branch Protection.
 
@@ -410,7 +410,7 @@ This is not a workflow variable and not something to add in the YAML. It is a Gi
 
 To enforce mentor approval policy, add the check name from **`ai-review-check-name`** (default: **`AI Review Gate`**) as a **required status check** in branch protection.
 
-### XVIII. Configure Required Status Check (Step-by-step)
+### XX. Configure Required Status Check (Step-by-step)
 
 1. In workflow, set the check name you want:
 
@@ -432,5 +432,7 @@ Important:
 - **Name matching is exact.** Any mismatch causes **`Waiting for status to be reported`**.
 - After changing rules/check name, **push a new commit or re-run checks once** so the new context is picked.
 
-Here is a Template Repository for the GitHub Informer which you can use as a baseline to work with and customize to your usage.
-https://www.github.com/Integrations-dev/RepositoryTemplate
+Here is a full template repository for the GitHub Informer which you can use as a baseline to work with and customize to your usage.
+
+- Public template repo: https://github.com/Lincy-Zoho/TemplateRepositoryNew
+- Older reference repo: https://www.github.com/Integrations-dev/RepositoryTemplate
