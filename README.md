@@ -17,7 +17,21 @@ Two posting modes are supported:
   - **channel-auth-token**: Cliq OAuth bearer token
   - the **bot must already be created** by the user and **added to the target channel**
 
-### I. Where to set bot or user notification mode
+### I. Workflow file location
+
+Add the GitHub Actions workflow file in your consuming repository at:
+
+- [.github/workflows/CliqConnector.yml](.github/workflows/CliqConnector.yml)
+
+If the `.github/workflows` folder does not exist, create it first.
+
+The workflow file should be copied from the template repository or created in that exact path in the target repository.
+
+The reusable action source code is in the public action repository here:
+
+- [GitHub_Informer_New.java](https://github.com/Lincy-Zoho/GitHub-Informer-New/blob/main/src/GitHub_Informer_New.java)
+
+### II. Where to set bot or user notification mode
 
 This must be configured as a **GitHub Repository Variable**, not hardcoded in the workflow YAML.
 
@@ -40,20 +54,6 @@ Set these in GitHub repository settings:
 3. If mode is `bot`, create **`CLIQ_BOT_UNIQUE_NAME`** with your actual bot unique name.
 
 Do not add these values directly in `.github/workflows/CliqConnector.yml`.
-
-### II. Workflow file location
-
-Add the GitHub Actions workflow file in your consuming repository at:
-
-- [.github/workflows/CliqConnector.yml](.github/workflows/CliqConnector.yml)
-
-If the `.github/workflows` folder does not exist, create it first.
-
-The workflow file should be copied from the template repository or created in that exact path in the target repository.
-
-The reusable action source code is in the public action repository here:
-
-- [GitHub_Informer_New.java](https://github.com/Lincy-Zoho/GitHub-Informer-New/blob/main/src/GitHub_Informer_New.java)
 
 ### III. Bot mode setup
 
@@ -216,6 +216,21 @@ If you do not want merge-blocking behavior, the branch protection rule is option
 9. Save the rule.
 
 The branch rule is not set in the workflow YAML. It is created in GitHub after the workflow has produced the status check.
+
+### IX. GitHub branch rule / status check behavior
+
+Important: GitHub branch protection is enforced by GitHub itself. The workflow cannot override a repository rule.
+
+- If you set the rule to **all branches**, GitHub will protect every branch, but the AI review check will not block merges unless the check is explicitly added as a required status check for that branch rule.
+- If you want the AI Review Gate to block merges, add **AI Review Gate** as a required status check on the specific protected branch(es) such as `main`, `master`, or `release`.
+- If you want AI review only as a PR validation signal and not as a merge blocker, do not mark the check as required.
+- The recommendation for this action is to apply protection only to the target release branches and keep AI review as PR-only validation instead of turning it into a full branch-wide enforcement rule.
+
+This is the expected behavior:
+
+- Workflow still runs on PR events and posts the AI review result.
+- GitHub only blocks the merge when the status check is required by the branch protection policy.
+- If the rule is configured for all branches but the AI Review Gate is not required, the merge is not blocked by that check.
 
 Behavior:
 
