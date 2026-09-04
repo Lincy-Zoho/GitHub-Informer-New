@@ -135,12 +135,15 @@ For PR events, you can store and reuse the Cliq thread ID in a GitHub Project V2
 
 Create GitHub classic token for `PROJECT_TOKEN`:
 
-1. Open https://github.com/settings/tokens
-2. Click Generate new token (classic)
-3. Select scopes:
+1. Open **GitHub** → **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
+2. Click **Generate new token (classic)**
+3. Set the **expiration time** (expiry date) for the token. Recommended: choose a short valid duration and rotate it before expiry.
+4. Select scopes:
   - **`repo`**
   - **`project`**
-4. Copy the token and save it as an **environment secret** named **`PROJECT_TOKEN`** in the `cliq-production` environment.
+5. Copy the token and save it as an **environment secret** named **`PROJECT_TOKEN`** in the `cliq-production` environment.
+
+> Note: Classic PATs must be created from the **Tokens (classic)** page and should always have an expiry date configured. Do not leave an unrestricted long-lived token in place.
 
 Required configuration for thread reply mode:
 
@@ -173,6 +176,15 @@ The secret values are:
 - `PROJECT_TOKEN`
 - `ENDPOINT`
 - `AI_REVIEW_TOKEN` (only if AI review is enabled)
+
+> Important: Any value referenced from the workflow YAML as `${{ vars.* }}` must be created in the repository settings under **Settings → Secrets and variables → Actions → Variables**. If it is missing, the workflow will not run correctly.
+>
+> The required values that must exist in repository variables are:
+> - `AI_REVIEW_ENABLED`
+> - `AI_REVIEW_SERVICE`
+> - `AI_REVIEW_MODEL`
+>
+> These three are mandatory for the AI review flow and must be set before the workflow is triggered.
 
 The values `github.repository_owner`, `github.repository`, and `github.event.pull_request.number` are GitHub runtime values and do not need to be entered by the user.
 
