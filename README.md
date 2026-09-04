@@ -201,6 +201,7 @@ The values `github.repository_owner`, `github.repository`, and `github.event.pul
 Use this exact workflow file path in the target repository:
 
 - `.github/workflows/CliqConnector.yml`
+- Public template repo: https://github.com/Lincy-Zoho/TemplateRepositoryNew
 
 How to add it in GitHub:
 
