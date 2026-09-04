@@ -29,21 +29,7 @@ For a new repository, use this order:
 
 This order matters because GitHub cannot require a status check before that check has been created by the workflow.
 
-### II. Workflow file location
-
-Add the GitHub Actions workflow file in your consuming repository at:
-
-- [.github/workflows/CliqConnector.yml](.github/workflows/CliqConnector.yml)
-
-If the `.github/workflows` folder does not exist, create it first.
-
-The workflow file should be copied from the template repository or created in that exact path in the target repository.
-
-The reusable action source code is in the public action repository here:
-
-- [GitHub_Informer_New.java](https://github.com/Lincy-Zoho/GitHub-Informer-New/blob/main/src/GitHub_Informer_New.java)
-
-### III. Where to set bot or user notification mode
+### II. Where to set bot or user notification mode
 
 This must be configured as a **GitHub Repository Variable**, not hardcoded in the workflow YAML.
 
@@ -208,11 +194,12 @@ The values `github.repository_owner`, `github.repository`, and `github.event.pul
    - `PROJECT_TOKEN`
    - `ENDPOINT`
    - `AI_REVIEW_TOKEN` (only if AI review is enabled)
-5. Commit and push the workflow file.
-6. Open the **Actions** tab and run the workflow once to create the status check.
-7. Go to **Settings** → **Rules** or **Branch protection** in GitHub.
-8. Enable **Require status checks to pass** and choose the AI Review Gate check.
-9. Save the rule.
+5. Create the workflow file at [.github/workflows/CliqConnector.yml](.github/workflows/CliqConnector.yml).
+6. Commit and push the workflow file.
+7. Open the **Actions** tab and run the workflow once to create the status check.
+8. Go to **Settings** → **Rules** or **Branch protection** in GitHub.
+9. Enable **Require status checks to pass** and choose the AI Review Gate check.
+10. Save the rule.
 
 The branch rule is not set in the workflow YAML. It is created in GitHub after the workflow has produced the status check.
 
