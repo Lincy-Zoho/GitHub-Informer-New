@@ -14,6 +14,7 @@ import static java.nio.file.StandardOpenOption.WRITE;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.Objects;
@@ -2101,10 +2102,18 @@ public class GitHub_Informer_New {
 		if(configuredModel != null && !configuredModel.isBlank())
 			return configuredModel;
 		if("claude".equals(provider))
-			return "claude-3-5-sonnet-latest";
+			return "claude-3-5-sonnet-20241022";
 		if("gemini".equals(provider))
 			return "gemini-1.5-pro";
 		return "gpt-4.1-mini";
+	}
+
+	public static boolean anthropicSupportsTemperature(String model)
+	{
+		if(model == null || model.isBlank())
+			return true;
+		String normalized = model.trim().toLowerCase(Locale.ROOT);
+		return !(normalized.contains("claude-sonnet-4") || normalized.contains("claude-opus-4") || normalized.contains("claude-sonnet-5") || normalized.contains("claude-opus-5"));
 	}
 
 	public static String resolveApiUrlForProvider(String provider, String configuredApiUrl)
@@ -2138,7 +2147,13 @@ public class GitHub_Informer_New {
 
 	public static HttpResult invokeClaude(String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
-		String payload = "{\"model\":\"" + jsonEscape(model) + "\",\"max_tokens\":6000,\"temperature\":0.1,\"system\":\"" + jsonEscape(systemPrompt) + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(userPrompt) + "\"}]}";
+		StringBuilder payloadBuilder = new StringBuilder();
+		payloadBuilder.append("{\"model\":\"").append(jsonEscape(model)).append("\",")
+			.append("\"max_tokens\":6000");
+		if(anthropicSupportsTemperature(model))
+			payloadBuilder.append(",\"temperature\":0.1");
+		payloadBuilder.append(",\"system\":\"").append(jsonEscape(systemPrompt)).append("\",\"messages\":[{\"role\":\"user\",\"content\":\"").append(jsonEscape(userPrompt)).append("\"}]}");
+		String payload = payloadBuilder.toString();
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
 		headers.put("x-api-key", token);
