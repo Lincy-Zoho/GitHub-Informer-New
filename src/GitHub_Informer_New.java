@@ -1839,6 +1839,7 @@ public class GitHub_Informer_New {
 		public String summary;
 		public String details;
 		public String reason;
+		public String rawAiContent;
 		public ArrayList<String> issueComments;
 
 		public AiReviewDecision(boolean passed, String summary, String details)
@@ -1927,11 +1928,25 @@ public class GitHub_Informer_New {
 			String failureMessage = buildAiFailureMessage(prNumber, pullRequestUrl, decision.summary, decision.details);
 			if(!hasIssueCommentPayload)
 			{
-				if(prCommentToken != null && !prCommentToken.isBlank())
+				ArrayList<String> rawIssueComments = new ArrayList<String>();
+				if(decision.rawAiContent != null && !decision.rawAiContent.isBlank())
+				{
+					rawIssueComments = extractIssueCommentsFromAiContent(decision.rawAiContent, decision.rawAiContent, "");
+				}
+				if(rawIssueComments != null && !rawIssueComments.isEmpty())
+				{
+					for(String issueComment : rawIssueComments)
+					{
+						if(prCommentToken != null && !prCommentToken.isBlank() && postPullRequestComment(repository, prNumber, prCommentToken, issueComment))
+							postedIssueComments++;
+					}
+					debug("AI review raw-issue fallback posted count=" + postedIssueComments);
+				}
+				if(postedIssueComments == 0 && prCommentToken != null && !prCommentToken.isBlank())
 				{
 					postPullRequestComment(repository, prNumber, prCommentToken, failureMessage);
 				}
-				else
+				else if(postedIssueComments == 0)
 				{
 					System.err.println("AI review failure PR comment skipped: missing github token.");
 				}
@@ -1943,7 +1958,20 @@ public class GitHub_Informer_New {
 				// those comments could be posted successfully.
 				if(prCommentToken != null && !prCommentToken.isBlank())
 				{
-					postPullRequestComment(repository, prNumber, prCommentToken, failureMessage);
+					ArrayList<String> rawIssueComments = new ArrayList<String>();
+					if(decision.rawAiContent != null && !decision.rawAiContent.isBlank())
+						rawIssueComments = extractIssueCommentsFromAiContent(decision.rawAiContent, decision.rawAiContent, "");
+					if(rawIssueComments != null && !rawIssueComments.isEmpty())
+					{
+						for(String issueComment : rawIssueComments)
+						{
+							if(postPullRequestComment(repository, prNumber, prCommentToken, issueComment))
+								postedIssueComments++;
+						}
+						debug("AI review raw-issue retry posted count=" + postedIssueComments);
+					}
+					if(postedIssueComments == 0)
+						postPullRequestComment(repository, prNumber, prCommentToken, failureMessage);
 				}
 			}
 			String cliqFailureMessage = "AI review failed.";
@@ -2025,6 +2053,7 @@ public class GitHub_Informer_New {
 			if(content == null || content.isBlank())
 				return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", provider + " returned empty content.", "The AI provider returned an empty response; the merge is blocked.");
 			String relaxedContent = content.replace("\\\"", "\"");
+			AiReviewDecision decision = null;
 
 			StructuredAiReviewResult structured = parseStructuredAiReview(content, aiResponse.body, diff);
 			if(structured != null && structured.status != null && !structured.status.isBlank())
@@ -2036,7 +2065,8 @@ public class GitHub_Informer_New {
 				if(details == null || details.isBlank())
 					details = "1. No detailed issues were returned by the AI response.";
 				String reason = defaultIfBlank(structured.reason, passed ? "AI review passed." : "AI review did not pass the gate.");
-				AiReviewDecision decision = new AiReviewDecision(passed, status, summary, details, reason);
+				decision = new AiReviewDecision(passed, status, summary, details, reason);
+				decision.rawAiContent = content;
 				decision.issueComments = structured.issues == null ? new ArrayList<String>() : structured.issues;
 				if("PARTIAL".equals(status))
 					return decision;
@@ -2064,10 +2094,14 @@ public class GitHub_Informer_New {
 				summaryFallback = defaultIfBlank(summaryFallback, "AI review passed");
 				String reasonFallback = defaultIfBlank(extractJsonStringField(content, "reason"), extractJsonStringField(relaxedContent, "reason"));
 				reasonFallback = defaultIfBlank(reasonFallback, "AI review passed with no reported issues.");
-				return new AiReviewDecision(true, "PASS", summaryFallback, "No blocking issues were returned by the AI response.", reasonFallback);
+				decision = new AiReviewDecision(true, "PASS", summaryFallback, "No blocking issues were returned by the AI response.", reasonFallback);
+				decision.rawAiContent = content;
+				return decision;
 			}
 
-			return new AiReviewDecision(false, "FAIL", "AI Review Gate failed", "AI response did not include a valid status. Response preview: " + trimTo(defaultIfBlank(content, aiResponse.body), 800), "The AI result was empty, malformed, or missing the required status field.");
+			decision = new AiReviewDecision(false, "FAIL", "AI Review Gate failed", "AI response did not include a valid status. Response preview: " + trimTo(defaultIfBlank(content, aiResponse.body), 800), "The AI result was empty, malformed, or missing the required status field.");
+			decision.rawAiContent = content;
+			return decision;
 		}
 		catch(Exception e)
 		{
