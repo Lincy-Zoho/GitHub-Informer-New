@@ -177,7 +177,12 @@ The secret values are:
 - `ENDPOINT`
 - `AI_REVIEW_TOKEN` (only if AI review is enabled)
 
-> Important: Any value referenced from the workflow YAML as `${{ vars.* }}` must be created in the repository settings under **Settings → Secrets and variables → Actions → Variables**. If it is missing, the workflow will not run correctly.
+> Important: In this workflow template, these secrets are expected to be created under the GitHub environment named **`cliq-production`**:
+> - **Settings → Environments → `cliq-production` → Secrets**
+>
+> If a user chooses a different environment name, the environment name in the workflow YAML must be updated to match exactly. Otherwise, the secrets will not be resolved.
+>
+> Also, any value referenced from the workflow YAML as `${{ vars.* }}` must be created in the repository settings under **Settings → Secrets and variables → Actions → Variables**. If it is missing, the workflow will not run correctly.
 >
 > The required values that must exist in repository variables are:
 > - `AI_REVIEW_ENABLED`
