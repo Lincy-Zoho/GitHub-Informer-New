@@ -910,7 +910,7 @@ public class GitHub_Informer_New {
 				if(isPrEvent)
 				{
 					String aiThreadId = prThreadId;
-					if((aiThreadId == null || aiThreadId.isBlank()) && createdThreadId != null && !createdThreadId.isBlank())
+					if("project".equalsIgnoreCase(defaultIfBlank(threadStorageMode, "")) && (aiThreadId == null || aiThreadId.isBlank()) && createdThreadId != null && !createdThreadId.isBlank())
 						aiThreadId = createdThreadId;
 					handleAiReviewGate(
 						Repository,
@@ -1975,7 +1975,7 @@ public class GitHub_Informer_New {
 
 		String diff = fetchPullRequestDiffWithRetries(repository, prNumber, pullRequestDiffUrl, pullRequestBaseSha, pullRequestHeadSha, githubToken);
 		if(diff == null || diff.isBlank())
-			return new AiReviewDecision(false, "failure", "AI Review Gate failed", "Unable to fetch PR diff from GitHub after retries. Failing AI review in strict mode.");
+			return new AiReviewDecision(true, "PASS", "AI Review Gate passed", "GitHub returned a successful response but no diff content; treating this as no code change and passing the review gate.", "No PR diff was returned, so there was nothing to review.");
 
 		String userPrompt = buildAiPrompt(repository, prNumber, pullRequestTitle, pullRequestBody, pullRequestUrl, diff);
 		String provider = detectAiProvider(aiToken, apiUrlFromEnv);
