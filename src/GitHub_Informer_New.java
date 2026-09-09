@@ -780,7 +780,7 @@ public class GitHub_Informer_New {
 				String projectIdRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_ID"), "");
 				String projectThreadFieldIdRaw = defaultIfBlank((String) System.getenv("PROJECT_THREAD_FIELD_ID"), defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_ID"), ""));
 				String projectThreadFieldNameRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_THREAD_FIELD_NAME"), "Cliq Thread ID");
-				String storageToken = githubToken;
+				String storageToken = null;
 				if("project".equals(threadStorageMode))
 				{
 					storageToken = defaultIfBlank(projectTokenRaw, githubToken);
