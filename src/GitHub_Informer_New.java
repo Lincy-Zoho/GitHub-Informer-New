@@ -772,9 +772,9 @@ public class GitHub_Informer_New {
 				String pullRequestBaseShaRaw = (String) System.getenv("PULL_REQUEST_BASE_SHA");
 				String pullRequestHeadShaRaw = (String) System.getenv("PULL_REQUEST_HEAD_SHA");
 				String prLabelsRaw = (String) System.getenv("PR_LABELS");
-				// Previous storage mode was PR marker comments ("comment").
-				// Keep default as comment so existing behavior remains backward-compatible.
-				String threadStorageMode = defaultIfBlank((String) System.getenv("CLIQ_THREAD_STORAGE_MODE"), "comment").trim().toLowerCase();
+				// Project thread storage is optional and opt-in. When it is not enabled,
+				// the workflow posts a normal channel message with no thread ID persistence.
+				String threadStorageMode = defaultIfBlank((String) System.getenv("CLIQ_THREAD_STORAGE_MODE"), "").trim().toLowerCase();
 				String projectOwnerRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_OWNER"), "");
 				String projectNumberRaw = defaultIfBlank((String) System.getenv("PROJECT_NUMBER"), defaultIfBlank((String) System.getenv("GITHUB_PROJECT_NUMBER"), ""));
 				String projectIdRaw = defaultIfBlank((String) System.getenv("GITHUB_PROJECT_ID"), "");
@@ -865,37 +865,44 @@ public class GitHub_Informer_New {
 
 				if(isPrEvent && (prThreadId == null || prThreadId.isBlank()) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && storageToken != null && !storageToken.isBlank())
 				{
-				  ThreadStorageResult storageResult = upsertCliqThreadIdWithResult(
-					  Repository,
-					  prNumber,
-					  storageToken,
-					  createdThreadId,
-					  threadStorageMode,
-					  projectOwnerRaw,
-					  projectNumberRaw,
-					  projectIdRaw,
-					  projectThreadFieldIdRaw,
-					  projectThreadFieldNameRaw
-				  );
-				  boolean threadSaved = storageResult.saved;
-
-				  if("project".equalsIgnoreCase(defaultIfBlank(threadStorageMode, "comment")) && !storageResult.savedInProject)
+				  if("project".equalsIgnoreCase(defaultIfBlank(threadStorageMode, "")))
 				  {
-					String failureReason = defaultIfBlank(storageResult.projectFailureReason, "Project custom field update failed for an unknown reason.");
-					String warningMessage = "### Cliq Thread Storage Warning\n\n"
-						+ "GitHub Informer could not store the Cliq thread id in the configured Project custom field.\n\n"
-						+ "**Reason:** " + failureReason + "\n\n"
-						+ "Please verify the custom field name and project identifier in your workflow YAML, then rerun.";
-					if(githubToken != null && !githubToken.isBlank())
+					ThreadStorageResult storageResult = upsertCliqThreadIdWithResult(
+						  Repository,
+						  prNumber,
+						  storageToken,
+						  createdThreadId,
+						  threadStorageMode,
+						  projectOwnerRaw,
+						  projectNumberRaw,
+						  projectIdRaw,
+						  projectThreadFieldIdRaw,
+						  projectThreadFieldNameRaw
+					  );
+					boolean threadSaved = storageResult.saved;
+
+					if(!storageResult.savedInProject)
+					{
+					  String failureReason = defaultIfBlank(storageResult.projectFailureReason, "Project custom field update failed for an unknown reason.");
+					  String warningMessage = "### Cliq Thread Storage Warning\n\n"
+						 + "GitHub Informer could not store the Cliq thread id in the configured Project custom field.\n\n"
+						 + "**Reason:** " + failureReason + "\n\n"
+						 + "Please verify the custom field name and project identifier in your workflow YAML, then rerun.";
+					  if(githubToken != null && !githubToken.isBlank())
 						postPullRequestComment(Repository, prNumber, githubToken, warningMessage);
-				  }
+					}
 
-				  if(!threadSaved)
+					if(!threadSaved)
+					{
+					  System.err.println("PR thread id was not saved in project custom field. Check project field configuration and token scope.");
+					}
+				  }
+				  else
 				  {
-					System.err.println("PR thread id was not saved in project custom field. Check project field configuration and token scope.");
+					debug("Project thread storage is disabled. Normal channel mode posts without storing the Cliq thread id.");
 				  }
 				}
-				else if(isPrEvent && (prThreadId == null || prThreadId.isBlank()) && (createdThreadId == null || createdThreadId.isBlank()))
+				else if(isPrEvent && (prThreadId == null || prThreadId.isBlank()) && (createdThreadId == null || createdThreadId.isBlank()) && "project".equalsIgnoreCase(defaultIfBlank(threadStorageMode, "")))
 				{
 				  System.err.println("PR thread marker not saved: Cliq response did not return a message/thread id.");
 				}
@@ -1287,29 +1294,28 @@ public class GitHub_Informer_New {
 
 	public static String fetchCliqThreadId(String repository, String prNumber, String githubToken, String storageMode, String projectOwner, String projectNumberRaw, String projectIdRaw, String projectThreadFieldId, String projectThreadFieldName)
 	{
-		if("project".equalsIgnoreCase(defaultIfBlank(storageMode, "comment")))
+		if("project".equalsIgnoreCase(defaultIfBlank(storageMode, "")))
 		{
 			String projectThreadId = fetchCliqThreadIdFromProjectField(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectIdRaw, projectThreadFieldName);
 			if(projectThreadId != null && !projectThreadId.isBlank())
 				return projectThreadId;
-			debug("Project field storage did not return thread id. Project-only mode: marker comment fallback disabled.");
+			debug("Project field storage did not return thread id. Project mode is enabled, but no stored thread id was found.");
 			return null;
 		}
-		return fetchCliqThreadIdFromPRComments(repository, prNumber, githubToken);
+		debug("Project thread storage is disabled. Normal channel mode does not load or reuse a thread id.");
+		return null;
 	}
 
 	public static class ThreadStorageResult
 	{
 		public boolean saved;
 		public boolean savedInProject;
-		public boolean savedInFallback;
 		public String projectFailureReason;
 
-		public ThreadStorageResult(boolean saved, boolean savedInProject, boolean savedInFallback, String projectFailureReason)
+		public ThreadStorageResult(boolean saved, boolean savedInProject, String projectFailureReason)
 		{
 			this.saved = saved;
 			this.savedInProject = savedInProject;
-			this.savedInFallback = savedInFallback;
 			this.projectFailureReason = defaultIfBlank(projectFailureReason, "");
 		}
 	}
@@ -1322,82 +1328,17 @@ public class GitHub_Informer_New {
 
 	public static ThreadStorageResult upsertCliqThreadIdWithResult(String repository, String prNumber, String githubToken, String threadId, String storageMode, String projectOwner, String projectNumberRaw, String projectIdRaw, String projectThreadFieldId, String projectThreadFieldName)
 	{
-		if("project".equalsIgnoreCase(defaultIfBlank(storageMode, "comment")))
+		if("project".equalsIgnoreCase(defaultIfBlank(storageMode, "")))
 		{
 			StringBuilder projectFailureReason = new StringBuilder();
 			boolean savedInProject = upsertCliqThreadIdInProjectField(repository, prNumber, githubToken, threadId, projectOwner, projectNumberRaw, projectIdRaw, projectThreadFieldId, projectThreadFieldName, projectFailureReason);
 			if(savedInProject)
-				return new ThreadStorageResult(true, true, false, "");
-			debug("Project field write failed. Project-only mode: marker comment fallback disabled.");
-			return new ThreadStorageResult(false, false, false, projectFailureReason.toString());
+				return new ThreadStorageResult(true, true, "");
+			debug("Project field write failed. Project thread storage is enabled, but no thread id could be saved.");
+			return new ThreadStorageResult(false, false, projectFailureReason.toString());
 		}
-		boolean markerSaved = upsertCliqThreadIdComment(repository, prNumber, githubToken, threadId);
-		return new ThreadStorageResult(markerSaved, false, markerSaved, "");
-	}
-
-	public static String fetchCliqThreadIdFromPRComments(String repository, String prNumber, String githubToken)
-	{
-		try
-		{
-			String url = "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments?per_page=100";
-			debug("Fetching PR comments for marker from " + url);
-			HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-			connection.setRequestMethod("GET");
-			connection.setRequestProperty("Accept", "application/vnd.github+json");
-			connection.setRequestProperty("Authorization", "Bearer " + githubToken);
-			int status = connection.getResponseCode();
-			String body = readConnectionBody(connection, status > 299);
-			debug("Fetch comments status=" + status + ", bodyPreview=" + preview(body));
-			if(status > 299 || body == null || body.isBlank())
-				return null;
-
-			Pattern markerPattern = Pattern.compile("cliq-thread-id:([^\\s<]+)");
-			Matcher markerMatcher = markerPattern.matcher(body);
-			if(markerMatcher.find())
-			{
-				debug("Existing marker found in PR comments.");
-				return markerMatcher.group(1);
-			}
-			debug("No existing marker found in PR comments.");
-		}
-		catch(Exception e)
-		{
-			System.err.println("Unable to fetch PR thread marker: " + e.getMessage());
-		}
-		return null;
-	}
-
-	public static boolean upsertCliqThreadIdComment(String repository, String prNumber, String githubToken, String threadId)
-	{
-		try
-		{
-			String url = "https://api.github.com/repos/" + repository + "/issues/" + prNumber + "/comments";
-			String bodyText = "<!-- cliq-thread-id:" + threadId + " -->\\nCliq thread marker for GitHub Informer.";
-			String payload = "{\"body\":\"" + jsonEscape(bodyText) + "\"}";
-			HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-			connection.setRequestMethod("POST");
-			connection.setRequestProperty("Accept", "application/vnd.github+json");
-			connection.setRequestProperty("Authorization", "Bearer " + githubToken);
-			connection.setRequestProperty("Content-Type", "application/json");
-			connection.setDoOutput(true);
-			try (OutputStream os = connection.getOutputStream())
-			{
-				os.write(payload.getBytes(UTF_8));
-				os.flush();
-			}
-			int status = connection.getResponseCode();
-			String body = readConnectionBody(connection, status > 299);
-			debug("Create PR marker comment status=" + status + ", bodyPreview=" + preview(body));
-			if(status >= 200 && status <= 299)
-				return true;
-			System.err.println("Unable to save PR thread marker: status=" + status + ", body=" + preview(body));
-			return false;
-		}
-		catch(Exception e)
-		{
-			System.err.println("Unable to save PR thread marker: " + e.getMessage());
-			return false;
-		}
+		debug("Project thread storage is disabled; normal channel mode stores no thread id and uses no fallback.");
+		return new ThreadStorageResult(false, false, "");
 	}
 
 	public static class ProjectItemContext
