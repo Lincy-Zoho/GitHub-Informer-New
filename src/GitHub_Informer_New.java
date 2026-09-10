@@ -38,6 +38,7 @@ public class GitHub_Informer_New {
 		boolean GITHUB_ERROR = true;
 		String ERROR_MESSAGE = new String("Multiple Errors Occured");
 		StringBuffer responseContent = new StringBuffer();
+		ArrayList<String> collectedErrors = new ArrayList<String>();
 		try {
 			String message;
 			String CustomMessage;
@@ -860,7 +861,15 @@ public class GitHub_Informer_New {
 				  }
 
 				  if(status != 204)
+				  {
 				    ERROR_MESSAGE = responseContent.toString();
+				    if(ERROR_MESSAGE != null && !ERROR_MESSAGE.isBlank())
+				    {
+				      String trimmedError = ERROR_MESSAGE.trim();
+				      if(!collectedErrors.contains(trimmedError))
+				        collectedErrors.add(trimmedError);
+				    }
+				  }
 				}
 
 				if(isPrEvent && (prThreadId == null || prThreadId.isBlank()) && createdThreadId != null && !createdThreadId.isBlank() && prNumber != null && !prNumber.isBlank() && storageToken != null && !storageToken.isBlank())
@@ -932,17 +941,39 @@ public class GitHub_Informer_New {
 				}
 				debug("Final message status=" + status + ", errorMessagePreview=" + preview(ERROR_MESSAGE));
 			}
+			String eventNameRaw = defaultIfBlank((String) System.getenv("GITHUB_EVENT_NAME"), "");
+			String issueTypeRaw = defaultIfBlank((String) System.getenv("ISSUE_TYPE"), "");
+			boolean isPullRequestCommentEvent = "issue_comment".equals(eventNameRaw) && "PULL_REQUEST".equals(issueTypeRaw);
+			boolean isPullRequestReviewEvent = "pull_request_review".equals(eventNameRaw);
+			boolean isPullRequestReviewCommentEvent = "pull_request_review_comment".equals(eventNameRaw);
+			boolean isPrEvent = "pull_request".equals(eventNameRaw)
+				|| "pull_request_target".equals(eventNameRaw)
+				|| isPullRequestCommentEvent
+				|| isPullRequestReviewEvent
+				|| isPullRequestReviewCommentEvent;
 			var githubOutput = (String) System.getenv("GITHUB_OUTPUT");
 			if(Objects.nonNull(githubOutput))
 			    GITHUB_ERROR = false;
 			if(status == 204 || status == 200 || status == 201)
 			  MESSAGE_SEND_FAILURE_ERROR = false;
 			if(INVALID_ENDPOINT_ERROR)
+			{
 			  ERROR_MESSAGE = "Invalid Endpoint. Endpoint must be either <Zoho Cliq Channel API Endpoint>?zapikey=<Zoho Cliq Webhook Token> or https://cliq.zoho.com/api/v2/channelsbyname/<CHANNEL_UNIQUE_NAME>/message?bot_unique_name=<BOT_UNIQUE_NAME>&zapikey=<Zoho Cliq Webhook Token>.";
+			  if(!collectedErrors.contains(ERROR_MESSAGE))
+			    collectedErrors.add(ERROR_MESSAGE);
+			}
 			else if(GITHUB_ERROR)
+			{
 			  ERROR_MESSAGE = "Environmental Variable GITHUB_OUTPUT missing";
+			  if(!collectedErrors.contains(ERROR_MESSAGE))
+			    collectedErrors.add(ERROR_MESSAGE);
+			}
 			else if(MESSAGE_SEND_FAILURE_ERROR)
+			{
 			  ERROR_MESSAGE = responseContent.toString().isBlank() ? ERROR_MESSAGE : responseContent.toString();
+			  if(ERROR_MESSAGE != null && !ERROR_MESSAGE.isBlank() && !collectedErrors.contains(ERROR_MESSAGE))
+			    collectedErrors.add(ERROR_MESSAGE);
+			}
 			else if(status == 204 || status == 200 || status == 201)
 			  ERROR_MESSAGE = "GitHub Informer executed Successfully";
 			String finalPrNumber = (String) System.getenv("PULL_REQUEST_NUMBER");
@@ -951,9 +982,15 @@ public class GitHub_Informer_New {
 			String finalGithubToken = defaultIfBlank((String) System.getenv("GITHUB_TOKEN"), "");
 			if(isPrEvent && finalPrNumber != null && !finalPrNumber.isBlank() && !finalGithubToken.isBlank() && !"GitHub Informer executed Successfully".equalsIgnoreCase(defaultIfBlank(ERROR_MESSAGE, "")) && (MESSAGE_SEND_FAILURE_ERROR || INVALID_ENDPOINT_ERROR || GITHUB_ERROR))
 			{
+				String prErrorSummary = defaultIfBlank(ERROR_MESSAGE, "Unknown error");
+				if(collectedErrors != null && !collectedErrors.isEmpty())
+				{
+					String summaryList = String.join("\n- ", collectedErrors);
+					prErrorSummary = "- " + summaryList;
+				}
 				String issueComment = "### GitHub Informer Error\n\n"
 					+ "The workflow failed while processing this PR.\n\n"
-					+ "**Error:** " + defaultIfBlank(ERROR_MESSAGE, "Unknown error") + "\n\n"
+					+ "**Errors:**\n" + prErrorSummary + "\n\n"
 					+ "Please review the workflow logs and fix the configuration or payload issue.";
 				postPullRequestComment(Repository, finalPrNumber, finalGithubToken, issueComment);
 			}
