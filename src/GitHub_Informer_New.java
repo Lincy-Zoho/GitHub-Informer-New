@@ -945,6 +945,18 @@ public class GitHub_Informer_New {
 			  ERROR_MESSAGE = responseContent.toString().isBlank() ? ERROR_MESSAGE : responseContent.toString();
 			else if(status == 204 || status == 200 || status == 201)
 			  ERROR_MESSAGE = "GitHub Informer executed Successfully";
+			String finalPrNumber = (String) System.getenv("PULL_REQUEST_NUMBER");
+			if((finalPrNumber == null || finalPrNumber.isBlank()) && isPullRequestCommentEvent)
+				finalPrNumber = (String) System.getenv("ISSUE_NUMBER");
+			String finalGithubToken = defaultIfBlank((String) System.getenv("GITHUB_TOKEN"), "");
+			if(isPrEvent && finalPrNumber != null && !finalPrNumber.isBlank() && !finalGithubToken.isBlank() && !"GitHub Informer executed Successfully".equalsIgnoreCase(defaultIfBlank(ERROR_MESSAGE, "")) && (MESSAGE_SEND_FAILURE_ERROR || INVALID_ENDPOINT_ERROR || GITHUB_ERROR))
+			{
+				String issueComment = "### GitHub Informer Error\n\n"
+					+ "The workflow failed while processing this PR.\n\n"
+					+ "**Error:** " + defaultIfBlank(ERROR_MESSAGE, "Unknown error") + "\n\n"
+					+ "Please review the workflow logs and fix the configuration or payload issue.";
+				postPullRequestComment(Repository, finalPrNumber, finalGithubToken, issueComment);
+			}
 			writeGithubOutput(status,ERROR_MESSAGE);
 		}  catch (MalformedURLException e) {
 			ERROR_MESSAGE = "Invalid Endpoint URL. Please provide channel-endpoint as either <Cliq Channel API Endpoint>?zapikey=<Cliq Webhook Token> or /channelsbyname/<CHANNEL_UNIQUE_NAME>/message?bot_unique_name=<BOT_UNIQUE_NAME>&zapikey=<Cliq Webhook Token>.";
@@ -2905,6 +2917,15 @@ public class GitHub_Informer_New {
 		msg.append(trimTo(trimmedDetails, 6000)).append("\n\n");
 		msg.append("Please fix the blocking issues and push new changes to rerun AI review.");
 		return msg.toString();
+	}
+
+	public static String buildGeneralErrorComment(String errorMessage)
+	{
+		String message = defaultIfBlank(errorMessage, "Unknown error");
+		return "### GitHub Informer Error\n\n"
+			+ "The workflow failed while processing this PR.\n\n"
+			+ "**Error:** " + message + "\n\n"
+			+ "Please review the workflow logs and fix the configuration or payload issue.";
 	}
 
 	public static boolean postPullRequestComment(String repository, String prNumber, String githubToken, String commentBody)
