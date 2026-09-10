@@ -272,6 +272,18 @@ These are repository variables, not secrets, and they are not environment-scoped
 
 The three `AI_REVIEW_*` variables are read unconditionally, so they must exist even when `AI_REVIEW_ENABLED=false`. In that case, set `AI_REVIEW_SERVICE` and `AI_REVIEW_MODEL` to valid values so the workflow can resolve the provider configuration without attempting an AI review.
 
+### If `AI_REVIEW_ENABLED=false`
+
+When the variable is set to `false`, the workflow exits the AI review path before any diff fetch, AI API call, GitHub check creation, or PR comment is attempted. In practice, this means:
+
+- no diff is fetched
+- no AI API request is sent
+- no AI review GitHub status check is created
+- no AI review PR comment is posted
+- no AI review gate blocks the merge
+
+This is the intended "feature off" mode. If you want to disable AI review completely, set the variable to `false` and remove the AI Review Gate from the required status checks in GitHub branch protection or rulesets. Otherwise, GitHub can still block the merge even though the workflow is not running the AI review logic.
+
 ---
 
 ## 5. Adding the workflow file
