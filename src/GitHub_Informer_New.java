@@ -1750,7 +1750,7 @@ public class GitHub_Informer_New {
 		try
 		{
 			String fieldIdentifier = defaultIfBlank(fieldIdentifierRaw, "").trim();
-			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId} ... on ProjectV2TextField{databaseId} ... on ProjectV2NumberField{databaseId} ... on ProjectV2DateField{databaseId}}}}}}";
+			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId}}}}}}";
 			String payload = "{"
 				+ "\"query\":\"" + jsonEscape(query) + "\"," 
 				+ "\"variables\":{\"projectId\":\"" + jsonEscape(projectId) + "\"}}";
@@ -1786,7 +1786,7 @@ public class GitHub_Informer_New {
 			String fieldIdentifier = defaultIfBlank(fieldIdentifierRaw, "").trim();
 			if(fieldIdentifier.isBlank())
 				return "";
-			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId} ... on ProjectV2TextField{databaseId} ... on ProjectV2NumberField{databaseId} ... on ProjectV2DateField{databaseId}}}}}}";
+			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId}}}}}}";
 			String payload = "{"
 				+ "\"query\":\"" + jsonEscape(query) + "\"," 
 				+ "\"variables\":{\"projectId\":\"" + jsonEscape(projectId) + "\"}}";
