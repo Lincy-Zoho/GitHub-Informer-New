@@ -1399,7 +1399,31 @@ public class GitHub_Informer_New {
 	{
 		if("project".equalsIgnoreCase(defaultIfBlank(storageMode, "")))
 		{
-			String projectThreadId = fetchCliqThreadIdFromProjectField(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectIdRaw, projectThreadFieldName);
+			String effectiveFieldName = defaultIfBlank(projectThreadFieldName, "Cliq Thread ID").trim();
+			String resolvedProjectId = defaultIfBlank(projectIdRaw, "").trim();
+			if(resolvedProjectId.isBlank() && !defaultIfBlank(projectOwner, "").trim().isBlank() && !defaultIfBlank(projectNumberRaw, "").trim().isBlank())
+			{
+				try
+				{
+					resolvedProjectId = resolveProjectIdByOwnerAndNumber(githubToken, projectOwner, Integer.parseInt(projectNumberRaw));
+				}
+				catch(Exception e)
+				{
+					resolvedProjectId = "";
+				}
+			}
+			String providedFieldId = defaultIfBlank(projectThreadFieldId, "").trim();
+			if(!providedFieldId.isBlank() && !resolvedProjectId.isBlank())
+			{
+				String resolvedFieldId = resolveProjectFieldIdByIdentifier(githubToken, resolvedProjectId, providedFieldId, effectiveFieldName);
+				if(resolvedFieldId != null && !resolvedFieldId.isBlank())
+				{
+					String fieldNameFromId = resolveProjectFieldNameByIdentifier(githubToken, resolvedProjectId, resolvedFieldId);
+					if(fieldNameFromId != null && !fieldNameFromId.isBlank())
+						effectiveFieldName = fieldNameFromId;
+				}
+			}
+			String projectThreadId = fetchCliqThreadIdFromProjectField(repository, prNumber, githubToken, projectOwner, projectNumberRaw, projectIdRaw, effectiveFieldName);
 			if(projectThreadId != null && !projectThreadId.isBlank())
 				return projectThreadId;
 			debug("Project field storage did not return thread id. Project mode is enabled, but no stored thread id was found.");
@@ -1754,6 +1778,41 @@ public class GitHub_Informer_New {
 		catch(Exception e)
 		{
 			System.err.println("Unable to resolve project field id by numeric database id: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static String resolveProjectFieldNameByIdentifier(String githubToken, String projectId, String fieldIdentifierRaw)
+	{
+		try
+		{
+			String fieldIdentifier = defaultIfBlank(fieldIdentifierRaw, "").trim();
+			if(fieldIdentifier.isBlank())
+				return "";
+			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId}}}}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(query) + "\"," 
+				+ "\"variables\":{\"projectId\":\"" + jsonEscape(projectId) + "\"}}";
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+				return "";
+
+			Matcher matcher = Pattern.compile("\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"name\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"", Pattern.DOTALL).matcher(response.body);
+			while(matcher.find())
+			{
+				String id = matcher.group(1);
+				String name = jsonUnescape(defaultIfBlank(matcher.group(2), ""));
+				int windowStart = Math.max(0, matcher.start() - 160);
+				int windowEnd = Math.min(response.body.length(), matcher.end() + 220);
+				String window = response.body.substring(windowStart, windowEnd);
+				Matcher dbMatcher = Pattern.compile("\\\"databaseId\\\":(\\d+)").matcher(window);
+				if((id.equalsIgnoreCase(fieldIdentifier) || (dbMatcher.find() && fieldIdentifier.equals(defaultIfBlank(dbMatcher.group(1), "").trim()))) && !defaultIfBlank(name, "").trim().isBlank())
+					return name;
+			}
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve project field name by identifier: " + e.getMessage());
 		}
 		return "";
 	}
