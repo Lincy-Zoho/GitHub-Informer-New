@@ -1750,7 +1750,7 @@ public class GitHub_Informer_New {
 		try
 		{
 			String fieldIdentifier = defaultIfBlank(fieldIdentifierRaw, "").trim();
-			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId}}}}}}";
+			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId} ... on ProjectV2TextField{databaseId} ... on ProjectV2NumberField{databaseId} ... on ProjectV2DateField{databaseId}}}}}}";
 			String payload = "{"
 				+ "\"query\":\"" + jsonEscape(query) + "\"," 
 				+ "\"variables\":{\"projectId\":\"" + jsonEscape(projectId) + "\"}}";
@@ -1758,16 +1758,13 @@ public class GitHub_Informer_New {
 			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
 				return "";
 
-			Matcher matcher = Pattern.compile("\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"name\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"", Pattern.DOTALL).matcher(response.body);
+			Matcher matcher = Pattern.compile("\\\"id\\\":\\\"([^\\\"]+)\\\".*?\\\"name\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\".*?\\\"databaseId\\\":(\\d+)", Pattern.DOTALL).matcher(response.body);
 			while(matcher.find())
 			{
 				String id = matcher.group(1);
 				String name = jsonUnescape(defaultIfBlank(matcher.group(2), ""));
-				int windowStart = Math.max(0, matcher.start() - 160);
-				int windowEnd = Math.min(response.body.length(), matcher.end() + 220);
-				String window = response.body.substring(windowStart, windowEnd);
-				Matcher dbMatcher = Pattern.compile("\\\"databaseId\\\":(\\d+)").matcher(window);
-				if(dbMatcher.find() && fieldIdentifier.equals(defaultIfBlank(dbMatcher.group(1), "").trim()))
+				String databaseId = defaultIfBlank(matcher.group(3), "").trim();
+				if(fieldIdentifier.equals(databaseId))
 				{
 					debug("Resolved numeric Project field id '" + fieldIdentifier + "' to node id '" + id + "' for field name='" + defaultIfBlank(name, "") + "'.");
 					return id;
@@ -1789,7 +1786,7 @@ public class GitHub_Informer_New {
 			String fieldIdentifier = defaultIfBlank(fieldIdentifierRaw, "").trim();
 			if(fieldIdentifier.isBlank())
 				return "";
-			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId}}}}}}";
+			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId} ... on ProjectV2TextField{databaseId} ... on ProjectV2NumberField{databaseId} ... on ProjectV2DateField{databaseId}}}}}}";
 			String payload = "{"
 				+ "\"query\":\"" + jsonEscape(query) + "\"," 
 				+ "\"variables\":{\"projectId\":\"" + jsonEscape(projectId) + "\"}}";
@@ -1797,16 +1794,13 @@ public class GitHub_Informer_New {
 			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
 				return "";
 
-			Matcher matcher = Pattern.compile("\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"name\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"", Pattern.DOTALL).matcher(response.body);
+			Matcher matcher = Pattern.compile("\\\"id\\\":\\\"([^\\\"]+)\\\".*?\\\"name\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\".*?(?:\\\"databaseId\\\":(\\d+))?", Pattern.DOTALL).matcher(response.body);
 			while(matcher.find())
 			{
 				String id = matcher.group(1);
 				String name = jsonUnescape(defaultIfBlank(matcher.group(2), ""));
-				int windowStart = Math.max(0, matcher.start() - 160);
-				int windowEnd = Math.min(response.body.length(), matcher.end() + 220);
-				String window = response.body.substring(windowStart, windowEnd);
-				Matcher dbMatcher = Pattern.compile("\\\"databaseId\\\":(\\d+)").matcher(window);
-				if((id.equalsIgnoreCase(fieldIdentifier) || (dbMatcher.find() && fieldIdentifier.equals(defaultIfBlank(dbMatcher.group(1), "").trim()))) && !defaultIfBlank(name, "").trim().isBlank())
+				String databaseId = defaultIfBlank(matcher.group(3), "").trim();
+				if((id.equalsIgnoreCase(fieldIdentifier) || fieldIdentifier.equals(databaseId)) && !defaultIfBlank(name, "").trim().isBlank())
 					return name;
 			}
 		}
