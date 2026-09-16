@@ -1494,9 +1494,31 @@ public class GitHub_Informer_New {
 			{
 				fieldId = resolveProjectFieldIdByName(githubToken, context.projectId, projectThreadFieldName);
 			}
-			else if(!fieldId.startsWith("PVTF_") && !fieldId.startsWith("PVTSSF_") && !fieldId.startsWith("PVTIF_"))
+			else if(fieldId.startsWith("PVTF_") || fieldId.startsWith("PVTSSF_") || fieldId.startsWith("PVTIF_"))
 			{
-				fieldId = resolveProjectFieldIdByIdentifier(githubToken, context.projectId, fieldId, projectThreadFieldName);
+				// This already is the GraphQL Project V2 field node id. Keep it as-is.
+			}
+			else if(fieldId.matches("\\d+"))
+			{
+				fieldId = resolveProjectFieldIdByNumericDatabaseId(githubToken, context.projectId, fieldId, projectThreadFieldName);
+				if(fieldId == null || fieldId.isBlank())
+				{
+					String reason = "Project thread storage skipped: PROJECT_THREAD_FIELD_ID='" + projectThreadFieldId + "' could not be resolved to a valid Project V2 field node id. Provide the exact field node id (for example PVTF_...) from the project field metadata.";
+					if(failureReasonOut != null)
+						failureReasonOut.append(reason);
+					System.err.println(reason);
+					emitGithubWorkflowError("Project field configuration error", reason);
+					return false;
+				}
+			}
+			else
+			{
+				String reason = "Project thread storage skipped: PROJECT_THREAD_FIELD_ID='" + projectThreadFieldId + "' is not a valid Project V2 field node id. Use the exact field node id, not the numeric database id or a display name.";
+				if(failureReasonOut != null)
+					failureReasonOut.append(reason);
+				System.err.println(reason);
+				emitGithubWorkflowError("Project field configuration error", reason);
+				return false;
 			}
 			if(fieldId == null || fieldId.isBlank())
 			{
@@ -1504,6 +1526,7 @@ public class GitHub_Informer_New {
 				if(failureReasonOut != null)
 					failureReasonOut.append(reason);
 				System.err.println(reason);
+				emitGithubWorkflowError("Project field configuration error", reason);
 				return false;
 			}
 
@@ -1649,6 +1672,10 @@ public class GitHub_Informer_New {
 		try
 		{
 			String fieldIdentifier = defaultIfBlank(fieldIdentifierRaw, "").trim();
+			if(fieldIdentifier.matches("\\d+"))
+				return resolveProjectFieldIdByNumericDatabaseId(githubToken, projectId, fieldIdentifier, fieldNameRaw);
+			if(fieldIdentifier.startsWith("PVTF_") || fieldIdentifier.startsWith("PVTSSF_") || fieldIdentifier.startsWith("PVTIF_"))
+				return fieldIdentifier;
 			String fieldName = defaultIfBlank(fieldNameRaw, "Cliq Thread ID").trim();
 			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId}}}}}}";
 			String payload = "{"
@@ -1690,6 +1717,43 @@ public class GitHub_Informer_New {
 		catch(Exception e)
 		{
 			System.err.println("Unable to resolve project field id by identifier: " + e.getMessage());
+		}
+		return "";
+	}
+
+	public static String resolveProjectFieldIdByNumericDatabaseId(String githubToken, String projectId, String fieldIdentifierRaw, String fieldNameRaw)
+	{
+		try
+		{
+			String fieldIdentifier = defaultIfBlank(fieldIdentifierRaw, "").trim();
+			String query = "query($projectId:ID!){node(id:$projectId){... on ProjectV2{fields(first:100){nodes{... on ProjectV2FieldCommon{id name} ... on ProjectV2Field{databaseId} ... on ProjectV2SingleSelectField{databaseId} ... on ProjectV2IterationField{databaseId}}}}}}";
+			String payload = "{"
+				+ "\"query\":\"" + jsonEscape(query) + "\"," 
+				+ "\"variables\":{\"projectId\":\"" + jsonEscape(projectId) + "\"}}";
+			HttpResult response = postGitHubGraphql(githubToken, payload);
+			if(response.status < 200 || response.status > 299 || response.body == null || response.body.isBlank() || response.body.contains("\"errors\""))
+				return "";
+
+			Matcher matcher = Pattern.compile("\\\"id\\\":\\\"([^\\\"]+)\\\",\\\"name\\\":\\\"((?:\\\\.|[^\\\\\"])*)\\\"", Pattern.DOTALL).matcher(response.body);
+			while(matcher.find())
+			{
+				String id = matcher.group(1);
+				String name = jsonUnescape(defaultIfBlank(matcher.group(2), ""));
+				int windowStart = Math.max(0, matcher.start() - 160);
+				int windowEnd = Math.min(response.body.length(), matcher.end() + 220);
+				String window = response.body.substring(windowStart, windowEnd);
+				Matcher dbMatcher = Pattern.compile("\\\"databaseId\\\":(\\d+)").matcher(window);
+				if(dbMatcher.find() && fieldIdentifier.equals(defaultIfBlank(dbMatcher.group(1), "").trim()))
+				{
+					debug("Resolved numeric Project field id '" + fieldIdentifier + "' to node id '" + id + "' for field name='" + defaultIfBlank(name, "") + "'.");
+					return id;
+				}
+			}
+			debug("Could not resolve numeric Project field id '" + fieldIdentifier + "' to a Project V2 field node id.");
+		}
+		catch(Exception e)
+		{
+			System.err.println("Unable to resolve project field id by numeric database id: " + e.getMessage());
 		}
 		return "";
 	}
@@ -3038,7 +3102,7 @@ public class GitHub_Informer_New {
 		msg.append("### ❌ AI Review Failed\n\n");
 		msg.append("*Project:* ").append(defaultIfBlank(projectName, "Unknown project")).append("\n");
 		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
-			msg.append("**MR:** [").append(pullRequestUrl).append("](").append(pullRequestUrl).append(")\n");
+			msg.append("*MR:* [").append(pullRequestUrl).append("](").append(pullRequestUrl).append(")\n");
 		else
 			msg.append("*MR:* n/a\n");
 		String effectiveSummary = defaultIfBlank(summary, "AI review marked this merge request as risky.");
