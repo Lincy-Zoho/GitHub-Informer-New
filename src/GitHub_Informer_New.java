@@ -2156,6 +2156,12 @@ public class GitHub_Informer_New {
 			String cliqFailureMessage = buildCliqAiFailureMessage(projectName, pullRequestUrl, decision.summary, decision.details, issueComments.size(), countUniqueFilesInIssueComments(issueComments));
 			postAiFailureToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, cliqFailureMessage);
 		}
+		else
+		{
+			String projectName = defaultIfBlank((String) System.getenv("GITHUB_REPOSITORY"), "Unknown project");
+			String cliqSuccessMessage = buildCliqAiSuccessMessage(projectName, pullRequestUrl, decision.summary, decision.details, 0, 0);
+			postAiSuccessToCliqThread(cliqEndpoint, cliqThreadId, imageUrl, cliqSuccessMessage);
+		}
 	}
 
 	public static boolean shouldRunAiReviewForEvent(String triggerMode, String triggerLabel, boolean runOnSync, String eventNameRaw, String actionRaw, String prLabelsRaw)
@@ -2190,7 +2196,7 @@ public class GitHub_Informer_New {
 	{
 		if(labelsRaw == null || labelsRaw.isBlank() || expectedLabel == null || expectedLabel.isBlank())
 			return false;
-		for(String label : labelsRaw.split("\\\\|\\\\||,|\\n"))
+		for(String label : labelsRaw.split("\\|\\||,|\\n"))
 		{
 			if(expectedLabel.trim().equalsIgnoreCase(label.trim()))
 				return true;
@@ -2292,58 +2298,6 @@ public class GitHub_Informer_New {
 		}
 	}
 
-	public static String detectAiProvider(String token, String apiUrl)
-	{
-		String url = defaultIfBlank(apiUrl, "").toLowerCase();
-		if(url.contains("anthropic"))
-			return "claude";
-		if(url.contains("generativelanguage.googleapis.com") || url.contains("gemini"))
-			return "gemini";
-		if(url.contains("openai"))
-			return "openai";
-
-		String normalizedToken = defaultIfBlank(token, "").trim();
-		if(normalizedToken.startsWith("sk-ant-"))
-			return "claude";
-		if(normalizedToken.startsWith("AIza"))
-			return "gemini";
-		if(normalizedToken.startsWith("sk-"))
-			return "openai";
-
-		// Default to OpenAI-compatible for unknown token patterns.
-		return "openai";
-	}
-
-	public static String resolveModelForProvider(String provider, String configuredModel)
-	{
-		if(configuredModel != null && !configuredModel.isBlank())
-			return configuredModel;
-		if("claude".equals(provider))
-			return "claude-sonnet-5";
-		if("gemini".equals(provider))
-			return "gemini-2.5-pro";
-		return "gpt-4.1-mini";
-	}
-
-	public static boolean anthropicSupportsTemperature(String model)
-	{
-		if(model == null || model.isBlank())
-			return true;
-		String normalized = model.trim().toLowerCase(Locale.ROOT);
-		return !(normalized.contains("claude-sonnet-4") || normalized.contains("claude-opus-4") || normalized.contains("claude-sonnet-5") || normalized.contains("claude-opus-5"));
-	}
-
-	public static String resolveApiUrlForProvider(String provider, String configuredApiUrl)
-	{
-		if(configuredApiUrl != null && !configuredApiUrl.isBlank())
-			return configuredApiUrl;
-		if("claude".equals(provider))
-			return "https://api.anthropic.com/v1/messages";
-		if("gemini".equals(provider))
-			return "https://generativelanguage.googleapis.com/v1beta/models";
-		return "https://api.openai.com/v1/chat/completions";
-	}
-
 	public static HttpResult invokeAiProvider(String provider, String apiUrl, String token, String model, String systemPrompt, String userPrompt) throws IOException
 	{
 		if("claude".equals(provider))
@@ -2369,7 +2323,7 @@ public class GitHub_Informer_New {
 			.append("\"max_tokens\":6000");
 		if(anthropicSupportsTemperature(model))
 			payloadBuilder.append(",\"temperature\":0.1");
-		payloadBuilder.append(",\"system\":\"").append(jsonEscape(systemPrompt)).append("\",\"messages\":[{\"role\":\"user\",\"content\":\"").append(jsonEscape(userPrompt)).append("\"}]}");
+		payloadBuilder.append(",\"system\":\"").append(jsonEscape(systemPrompt)).append("\",\"messages\":[{\"role\":\"user\",\"content\":\"").append(jsonEscape(userPrompt)).append("\"}]}" );
 		String payload = payloadBuilder.toString();
 		HashMap<String, String> headers = new HashMap<String, String>();
 		headers.put("Content-Type", "application/json");
@@ -3121,7 +3075,7 @@ public class GitHub_Informer_New {
 	{
 		if(raw == null)
 			return "";
-		return raw.replace("\\\\n", "\\n").replace("\\\\r", "").replace("\\\\\"", "\"").replace("\\\\\\\\", "\\");
+		return raw.replace("\\\\n", "\\n").replace("\\\\r", "").replace("\\\\\"", "\"").replace("\\\\\\", "\\");
 	}
 
 	public static String trimTo(String value, int maxLen)
@@ -3131,6 +3085,58 @@ public class GitHub_Informer_New {
 		if(value.length() <= maxLen)
 			return value;
 		return value.substring(0, maxLen) + "\n\n[truncated]";
+	}
+
+	public static String detectAiProvider(String token, String apiUrl)
+	{
+		String url = defaultIfBlank(apiUrl, "").toLowerCase();
+		if(url.contains("anthropic"))
+			return "claude";
+		if(url.contains("generativelanguage.googleapis.com") || url.contains("gemini"))
+			return "gemini";
+		if(url.contains("openai"))
+			return "openai";
+
+		String normalizedToken = defaultIfBlank(token, "").trim();
+		if(normalizedToken.startsWith("sk-ant-"))
+			return "claude";
+		if(normalizedToken.startsWith("AIza"))
+			return "gemini";
+		if(normalizedToken.startsWith("sk-"))
+			return "openai";
+
+		// Default to OpenAI-compatible for unknown token patterns.
+		return "openai";
+	}
+
+	public static String resolveModelForProvider(String provider, String configuredModel)
+	{
+		if(configuredModel != null && !configuredModel.isBlank())
+			return configuredModel;
+		if("claude".equals(provider))
+			return "claude-sonnet-5";
+		if("gemini".equals(provider))
+			return "gemini-2.5-pro";
+		return "gpt-4.1-mini";
+	}
+
+	public static boolean anthropicSupportsTemperature(String model)
+	{
+		if(model == null || model.isBlank())
+			return true;
+		String normalized = model.trim().toLowerCase(Locale.ROOT);
+		return !(normalized.contains("claude-sonnet-4") || normalized.contains("claude-opus-4") || normalized.contains("claude-sonnet-5") || normalized.contains("claude-opus-5"));
+	}
+
+	public static String resolveApiUrlForProvider(String provider, String configuredApiUrl)
+	{
+		if(configuredApiUrl != null && !configuredApiUrl.isBlank())
+			return configuredApiUrl;
+		if("claude".equals(provider))
+			return "https://api.anthropic.com/v1/messages";
+		if("gemini".equals(provider))
+			return "https://generativelanguage.googleapis.com/v1beta/models";
+		return "https://api.openai.com/v1/chat/completions";
 	}
 
 	public static String buildAiFailureMessage(String prNumber, String pullRequestUrl, String summary, String details)
@@ -3159,6 +3165,23 @@ public class GitHub_Informer_New {
 		else
 			msg.append("*MR:* n/a\n");
 		String effectiveSummary = defaultIfBlank(summary, "AI review marked this merge request as risky.");
+		msg.append("*Summary:* ").append(effectiveSummary).append("\n");
+		msg.append("*Issue count:* ").append(issueCount).append("\n");
+		msg.append("*Files reviewed:* ").append(filesReviewed).append("\n\n");
+		msg.append("See full details in the MR comment.");
+		return msg.toString();
+	}
+
+	public static String buildCliqAiSuccessMessage(String projectName, String pullRequestUrl, String summary, String details, int issueCount, int filesReviewed)
+	{
+		StringBuilder msg = new StringBuilder();
+		msg.append("### ✅ AI Review Passed\n\n");
+		msg.append("*Project:* ").append(defaultIfBlank(projectName, "Unknown project")).append("\n");
+		if(pullRequestUrl != null && !pullRequestUrl.isBlank())
+			msg.append("*MR:* [").append(pullRequestUrl).append("](").append(pullRequestUrl).append(")\n");
+		else
+			msg.append("*MR:* n/a\n");
+		String effectiveSummary = defaultIfBlank(summary, "AI review checks passed.");
 		msg.append("*Summary:* ").append(effectiveSummary).append("\n");
 		msg.append("*Issue count:* ").append(issueCount).append("\n");
 		msg.append("*Files reviewed:* ").append(filesReviewed).append("\n\n");
@@ -3263,6 +3286,32 @@ public class GitHub_Informer_New {
 		catch(Exception e)
 		{
 			System.err.println("Failed to post AI review failure in Cliq: " + e.getMessage());
+		}
+	}
+
+	public static void postAiSuccessToCliqThread(String cliqEndpoint, String cliqThreadId, String imageUrl, String successMessage)
+	{
+		if(cliqEndpoint == null || cliqEndpoint.isBlank())
+			return;
+		try
+		{
+			String message = successMessage;
+			boolean useCliqBotAuth = isCliqBotAuthEndpoint(cliqEndpoint);
+			if(cliqThreadId != null && !cliqThreadId.isBlank())
+			{
+				ArrayList<String> candidates = buildReplyToCandidates(cliqThreadId);
+				for(String candidate : candidates)
+				{
+					HttpResult result = postJson(cliqEndpoint, buildCliqCardPayload(message, imageUrl, candidate, useCliqBotAuth));
+					if(result.status >= 200 && result.status <= 299)
+						return;
+				}
+			}
+			postJson(cliqEndpoint, buildCliqCardPayload(message, imageUrl, null, useCliqBotAuth));
+		}
+		catch(Exception e)
+		{
+			System.err.println("Failed to post AI review success in Cliq: " + e.getMessage());
 		}
 	}
 
