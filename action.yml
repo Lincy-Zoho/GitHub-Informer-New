@@ -131,203 +131,257 @@ runs:
       - name: Setting Message Content
         id: action-finder
         shell: bash
+        env:
+          EVT_ACTION: ${{ github.event.action }}
+          EVT_RULE_NAME: ${{ github.event.rule.name }}
+          EVT_RULE_ID: ${{ github.event.rule.id }}
+          EVT_CHECK_RUN_NAME: ${{ github.event.check_run.name }}
+          EVT_CHECK_RUN_URL: ${{ github.event.check_run.html_url }}
+          EVT_REF: ${{ github.event.ref }}
+          EVT_REF_TYPE: ${{ github.event.ref_type }}
+          EVT_DEPLOYMENT_ENV: ${{ github.event.deployment.environment }}
+          EVT_DEPLOYMENT_STATUS_ENV: ${{ github.event.deployment_status.environment }}
+          EVT_DEPLOYMENTS_URL: ${{ github.event.repository.deployments_url }}
+          EVT_DEPLOYMENT_STATUS: ${{ github.event.deployment_status.state }}
+          EVT_DISCUSSION_TITLE: ${{ github.event.discussion.title }}
+          EVT_DISCUSSION_URL: ${{ github.event.discussion.html_url }}
+          EVT_LABEL_NAME: ${{ github.event.label.name }}
+          EVT_NEW_REPOSITORY_TRANSFER: ${{ github.event.changes.new_repository.full_name }}
+          EVT_CATEGORY_NAME: ${{ github.event.discussion.category.name }}
+          EVT_COMMENT_BODY: ${{ github.event.comment.body }}
+          EVT_COMMENT_URL: ${{ github.event.comment.html_url }}
+          EVT_FORKEE_FULL_NAME: ${{ github.event.forkee.full_name }}
+          EVT_PAGES_JSON: ${{ toJSON(github.event.pages) }}
+          EVT_ISSUE_TITLE: ${{ github.event.issue.title }}
+          EVT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVT_ISSUE_URL: ${{ github.event.issue.html_url }}
+          EVT_ASSIGNEE_LOGIN: ${{ github.event.assignee.login }}
+          EVT_MILESTONE_TITLE: ${{ github.event.milestone.title }}
+          EVT_MILESTONE_URL: ${{ github.event.milestone.html_url }}
+          EVT_PAGE_BUILD_URL: ${{ github.event.build.url }}
+          EVT_PR_TITLE: ${{ github.event.pull_request.title }}
+          EVT_PR_BODY: ${{ github.event.pull_request.body }}
+          EVT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVT_PR_URL: ${{ github.event.pull_request.html_url }}
+          EVT_PR_DIFF_URL: ${{ github.event.pull_request.diff_url }}
+          EVT_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVT_PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, '||') }}
+          EVT_REQUESTED_REVIEWER_LOGIN: ${{ github.event.requested_reviewer.login }}
+          EVT_PR_MILESTONE_NAME: ${{ github.event.milestone.name }}
+          EVT_REVIEW_PR_URL: ${{ github.event.review.pull_request_url }}
+          EVT_REVIEW_URL: ${{ github.event.review.html_url }}
+          EVT_COMMIT_URL: ${{ github.event.head_commit.url }}
+          EVT_COMPARE_URL: ${{ github.event.compare }}
+          EVT_REGISTRY_PACKAGE_NAME: ${{ github.event.registry_package.name }}
+          EVT_REGISTRY_PACKAGE_VERSION: ${{ github.event.registry_package.package_version.name }}
+          EVT_REGISTRY_PACKAGE_TYPE: ${{ github.event.registry_package.package_type }}
+          EVT_REGISTRY_PACKAGE_URL: ${{ github.event.registry_package.html_url }}
+          EVT_RELEASE_NAME: ${{ github.event.release.name }}
+          EVT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          EVT_RELEASE_URL: ${{ github.event.release.html_url }}
+          EVT_STATUS_STATE: ${{ github.event.state }}
         run: |
-          echo "ACTION=${{ github.event.action }}" >> $GITHUB_ENV
+          # All github.event.* values are passed in via `env:` above and referenced
+          # here as quoted shell variables, never spliced into the script text, so
+          # untrusted content (issue/PR titles, comments, bodies, etc.) can never be
+          # interpreted as shell syntax.
+          set_env() {
+            printf '%s<<__GH_EOF__\n' "$1" >> "$GITHUB_ENV"
+            printf '%s\n' "$2" >> "$GITHUB_ENV"
+            printf '__GH_EOF__\n' >> "$GITHUB_ENV"
+          }
+
+          set_env ACTION "$EVT_ACTION"
           if ${{ github.event_name == 'branch_protection_rule' }}
           then
-            echo "BRANCH_RULE=${{ github.event.rule.name }}" >> $GITHUB_ENV
-            echo "BRANCH_RULE_ID=${{ github.event.rule.id }}" >> $GITHUB_ENV
+            set_env BRANCH_RULE "$EVT_RULE_NAME"
+            set_env BRANCH_RULE_ID "$EVT_RULE_ID"
             echo "message=${{ inputs.branch-protection-rule-message }}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'check_run' }}
           then
-            echo "CHECK_RUN_NAME=${{ github.event.check_run.name }}" >> $GITHUB_ENV
-            echo "CHECK_RUN_URL=${{ github.event.check_run.html_url }}" >> $GITHUB_ENV
+            set_env CHECK_RUN_NAME "$EVT_CHECK_RUN_NAME"
+            set_env CHECK_RUN_URL "$EVT_CHECK_RUN_URL"
             echo "message=${{inputs.check-run-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'check_suite' }}
           then
             echo "message=${{inputs.check-suite-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'create' }}
           then
-            echo "BRANCH_NAME=${{ github.event.ref }}" >> $GITHUB_ENV
-            echo "BRANCH_TYPE=${{ github.event.ref_type }}" >> $GITHUB_ENV
+            set_env BRANCH_NAME "$EVT_REF"
+            set_env BRANCH_TYPE "$EVT_REF_TYPE"
             echo "message=${{ inputs.create-message }}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'delete' }}
           then
-            echo "BRANCH_NAME=${{ github.event.ref }}" >> $GITHUB_ENV
-            echo "BRANCH_TYPE=${{ github.event.ref_type }}" >> $GITHUB_ENV
+            set_env BRANCH_NAME "$EVT_REF"
+            set_env BRANCH_TYPE "$EVT_REF_TYPE"
             echo "message=${{inputs.delete-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'deployment' }}
           then
-            echo "DEPLOYMENT_ENV=${{ github.event.deployment.environment }}" >> $GITHUB_ENV
-            echo "DEPLOYMENT_URL=${{ github.event.repository.deployments_url }}" >> $GITHUB_ENV
+            set_env DEPLOYMENT_ENV "$EVT_DEPLOYMENT_ENV"
+            set_env DEPLOYMENT_URL "$EVT_DEPLOYMENTS_URL"
             echo "message=${{inputs.deployment-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'deployment_status' }}
           then
-            echo "DEPLOYMENT_ENV=${{ github.event.deployment_status.environment }}" >> $GITHUB_ENV
-            echo "DEPLOYMENT_URL=${{ github.event.repository.deployments_url }}" >> $GITHUB_ENV
-            echo "STATUS=${{ github.event.deployment_status.state }}" >> $GITHUB_ENV
+            set_env DEPLOYMENT_ENV "$EVT_DEPLOYMENT_STATUS_ENV"
+            set_env DEPLOYMENT_URL "$EVT_DEPLOYMENTS_URL"
+            set_env STATUS "$EVT_DEPLOYMENT_STATUS"
             echo "message=${{inputs.deployment-status-message}}" >> $GITHUB_ENV
           elif ${{github.event_name == 'discussion' }}
           then
-            echo "DISCUSSION=${{ github.event.discussion.title }}" >> $GITHUB_ENV
-            echo "DISCUSSION_URL=${{ github.event.discussion.html_url }}" >> $GITHUB_ENV
+            set_env DISCUSSION "$EVT_DISCUSSION_TITLE"
+            set_env DISCUSSION_URL "$EVT_DISCUSSION_URL"
             if ${{ github.event.action == 'labeled' || github.event.action == 'unlabeled' }}
             then
-              echo "LABEL_NAME=${{ github.event.label.name }}" >> $GITHUB_ENV
+              set_env LABEL_NAME "$EVT_LABEL_NAME"
             elif ${{ github.event.action == 'transferred' }}
             then
-              echo "NEW_REPOSITORY=${{ github.event.changes.new_repository.full_name }}" >> $GITHUB_ENV
+              set_env NEW_REPOSITORY "$EVT_NEW_REPOSITORY_TRANSFER"
             elif ${{ github.event.action == 'category_changed' }}
             then
-              echo "CATEGORY_NAME=${{ github.event.discussion.category.name }}" >> $GITHUB_ENV;
+              set_env CATEGORY_NAME "$EVT_CATEGORY_NAME"
             fi
             echo "message=${{inputs.discussion-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'discussion_comment' }}
           then
-            echo "DISCUSSION_COMMENT=${{ github.event.comment.body }}" >> $GITHUB_ENV
-            echo "COMMENT_URL=${{ github.event.comment.html_url }}" >> $GITHUB_ENV
-            echo "DISCUSSION=${{ github.event.discussion.title }}" >> $GITHUB_ENV
-            echo "DISCUSSION_URL=${{ github.event.discussion.html_url }}" >> $GITHUB_ENV
+            set_env DISCUSSION_COMMENT "$EVT_COMMENT_BODY"
+            set_env COMMENT_URL "$EVT_COMMENT_URL"
+            set_env DISCUSSION "$EVT_DISCUSSION_TITLE"
+            set_env DISCUSSION_URL "$EVT_DISCUSSION_URL"
             echo "message=${{inputs.discussion-comment-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'fork' }}
           then
-            echo "NEW_REPOSITORY=${{ github.event.forkee.full_name }}" >> $GITHUB_ENV
+            set_env NEW_REPOSITORY "$EVT_FORKEE_FULL_NAME"
             echo "message=${{inputs.fork-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'gollum' }}
           then
-            echo "PAGES<<EOF" >> $GITHUB_ENV
-            echo '${{ toJSON(github.event.pages) }}' >> $GITHUB_ENV
-            echo "EOF" >> $GITHUB_ENV
+            set_env PAGES "$EVT_PAGES_JSON"
             echo "message=${{inputs.gollum-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'issue_comment' && !github.event.issue.pull_request }}
           then
-            echo "ISSUE_TITLE=${{ github.event.issue.title}}" >> $GITHUB_ENV
-            echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_ENV
-            echo "ISSUE_URL=${{ github.event.comment.html_url }}" >> $GITHUB_ENV
-            echo "ISSUE_COMMENT=${{ github.event.comment.body }}" >> $GITHUB_ENV
-            echo "ISSUE_TYPE=ISSUE" >> $GITHUB_ENV
+            set_env ISSUE_TITLE "$EVT_ISSUE_TITLE"
+            set_env ISSUE_NUMBER "$EVT_ISSUE_NUMBER"
+            set_env ISSUE_URL "$EVT_COMMENT_URL"
+            set_env ISSUE_COMMENT "$EVT_COMMENT_BODY"
+            set_env ISSUE_TYPE "ISSUE"
             echo "message=${{inputs.issue-comment-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'issue_comment' }}
           then
-            echo "ISSUE_TITLE=${{ github.event.issue.title }}" >> $GITHUB_ENV
-            echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_ENV
-            echo "ISSUE_URL=${{ github.event.comment.html_url }}" >> $GITHUB_ENV
-            echo "ISSUE_COMMENT=${{ github.event.comment.body }}" >> $GITHUB_ENV
-            echo "ISSUE_TYPE=PULL_REQUEST" >> $GITHUB_ENV
+            set_env ISSUE_TITLE "$EVT_ISSUE_TITLE"
+            set_env ISSUE_NUMBER "$EVT_ISSUE_NUMBER"
+            set_env ISSUE_URL "$EVT_COMMENT_URL"
+            set_env ISSUE_COMMENT "$EVT_COMMENT_BODY"
+            set_env ISSUE_TYPE "PULL_REQUEST"
             MESSAGE='${{inputs.pull-request-comment-message}}'
             MESSAGE=${MESSAGE//(event)/"Pull Request Comment"}
             echo "message=$MESSAGE" >> $GITHUB_ENV
           elif ${{ github.event_name == 'issues' }}
           then
-            echo "ISSUE_TITLE=${{ github.event.issue.title }}" >> $GITHUB_ENV
-            echo "ISSUE_NUMBER=${{ github.event.issue.number }}" >> $GITHUB_ENV
-            echo "ISSUE_URL=${{ github.event.issue.html_url }}" >> $GITHUB_ENV
+            set_env ISSUE_TITLE "$EVT_ISSUE_TITLE"
+            set_env ISSUE_NUMBER "$EVT_ISSUE_NUMBER"
+            set_env ISSUE_URL "$EVT_ISSUE_URL"
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
             then
-              echo "ASSIGNED_USER=${{ github.event.assignee.login }}" >> $GITHUB_ENV
+              set_env ASSIGNED_USER "$EVT_ASSIGNEE_LOGIN"
             elif ${{ github.event.action == 'labeled' || github.event.action == 'unlabeled' }}
-            then 
-              echo "ASSIGNED_LABEL=${{ github.event.label.name }}" >> $GITHUB_ENV
+            then
+              set_env ASSIGNED_LABEL "$EVT_LABEL_NAME"
             elif ${{ github.event.action == 'milestoned' }}
             then
-              echo "MILESTONE=${{ github.event.milestone.title }}" >> $GITHUB_ENV
+              set_env MILESTONE "$EVT_MILESTONE_TITLE"
             fi
             echo "message=${{inputs.issues-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'label' }}
           then
-            echo "LABEL_NAME=${{ github.event.label.name }}" >> $GITHUB_ENV
+            set_env LABEL_NAME "$EVT_LABEL_NAME"
             echo "message=${{inputs.label-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'milestone' }}
           then
-            echo "MILESTONE=${{ github.event.milestone.title }}" >> $GITHUB_ENV
-            echo "MILESTONE_URL=${{ github.event.milestone.html_url }}" >> $GITHUB_ENV
+            set_env MILESTONE "$EVT_MILESTONE_TITLE"
+            set_env MILESTONE_URL "$EVT_MILESTONE_URL"
             echo "message=${{inputs.milestone-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'page_build' }}
           then
-            echo "PAGE_BUILD_URL=${{ github.event.build.url }}" >> $GITHUB_ENV
+            set_env PAGE_BUILD_URL "$EVT_PAGE_BUILD_URL"
             echo "message=${{inputs.page-build-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'public' }}
           then
             echo "message=${{inputs.public-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'pull_request' }}
           then
-            echo "PULL_REQUEST_TITLE=${{ github.event.pull_request.title }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_BODY<<EOF" >> $GITHUB_ENV
-            echo "${{ github.event.pull_request.body }}" >> $GITHUB_ENV
-            echo "EOF" >> $GITHUB_ENV
-            echo "PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_URL=${{ github.event.pull_request.html_url }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_DIFF_URL=${{ github.event.pull_request.diff_url }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_BASE_SHA=${{ github.event.pull_request.base.sha }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
-            echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
+            set_env PULL_REQUEST_TITLE "$EVT_PR_TITLE"
+            set_env PULL_REQUEST_BODY "$EVT_PR_BODY"
+            set_env PULL_REQUEST_NUMBER "$EVT_PR_NUMBER"
+            set_env PULL_REQUEST_URL "$EVT_PR_URL"
+            set_env PULL_REQUEST_DIFF_URL "$EVT_PR_DIFF_URL"
+            set_env PULL_REQUEST_BASE_SHA "$EVT_PR_BASE_SHA"
+            set_env PULL_REQUEST_HEAD_SHA "$EVT_PR_HEAD_SHA"
+            set_env PR_LABELS "$EVT_PR_LABELS"
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
             then
-              echo "ASSIGNED_USER=${{ github.event.assignee.login }}" >> $GITHUB_ENV
+              set_env ASSIGNED_USER "$EVT_ASSIGNEE_LOGIN"
             elif ${{ github.event.action == 'labeled' || github.event.action == 'unlabeled' }}
-            then 
-              echo "ASSIGNED_LABEL=${{ github.event.label.name }}" >> $GITHUB_ENV
+            then
+              set_env ASSIGNED_LABEL "$EVT_LABEL_NAME"
             elif ${{ github.event.action == 'review_requested' || github.event.action == 'review_request_removed' }}
             then
-              echo "ASSIGNED_USER=${{ github.event.requested_reviewer.login }}" >> $GITHUB_ENV
+              set_env ASSIGNED_USER "$EVT_REQUESTED_REVIEWER_LOGIN"
             elif ${{ github.event.action == 'milestoned' }}
             then
-              echo "MILESTONE=${{ github.event.milestone.name }}" >> $GITHUB_ENV
+              set_env MILESTONE "$EVT_PR_MILESTONE_NAME"
             fi
             echo "message=${{inputs.pull-request-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'pull_request_review' }}
           then
-            echo "PULL_REQUEST_TITLE=${{ github.event.pull_request.title }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_URL=${{ github.event.review.pull_request_url }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_REVIEW_URL=${{github.event.review.html_url}}" >> $GITHUB_ENV
+            set_env PULL_REQUEST_TITLE "$EVT_PR_TITLE"
+            set_env PULL_REQUEST_NUMBER "$EVT_PR_NUMBER"
+            set_env PULL_REQUEST_URL "$EVT_REVIEW_PR_URL"
+            set_env PULL_REQUEST_REVIEW_URL "$EVT_REVIEW_URL"
             echo "message=${{inputs.pull-request-review-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'pull_request_review_comment' }}
           then
-            echo "PULL_REQUEST_TITLE=${{ github.event.pull_request.title }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_URL=${{github.event.pull_request.html_url }}" >> $GITHUB_ENV
+            set_env PULL_REQUEST_TITLE "$EVT_PR_TITLE"
+            set_env PULL_REQUEST_NUMBER "$EVT_PR_NUMBER"
+            set_env PULL_REQUEST_URL "$EVT_PR_URL"
             echo "message=${{inputs.pull-request-review-comment-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'pull_request_target' }}
           then
-            echo "PULL_REQUEST_TITLE=${{ github.event.pull_request.title }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_BODY<<EOF" >> $GITHUB_ENV
-            echo "${{ github.event.pull_request.body }}" >> $GITHUB_ENV
-            echo "EOF" >> $GITHUB_ENV
-            echo "PULL_REQUEST_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_URL=${{ github.event.pull_request.html_url }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_DIFF_URL=${{ github.event.pull_request.diff_url }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_BASE_SHA=${{ github.event.pull_request.base.sha }}" >> $GITHUB_ENV
-            echo "PULL_REQUEST_HEAD_SHA=${{ github.event.pull_request.head.sha }}" >> $GITHUB_ENV
-            echo "PR_LABELS=${{ join(github.event.pull_request.labels.*.name, '||') }}" >> $GITHUB_ENV
+            set_env PULL_REQUEST_TITLE "$EVT_PR_TITLE"
+            set_env PULL_REQUEST_BODY "$EVT_PR_BODY"
+            set_env PULL_REQUEST_NUMBER "$EVT_PR_NUMBER"
+            set_env PULL_REQUEST_URL "$EVT_PR_URL"
+            set_env PULL_REQUEST_DIFF_URL "$EVT_PR_DIFF_URL"
+            set_env PULL_REQUEST_BASE_SHA "$EVT_PR_BASE_SHA"
+            set_env PULL_REQUEST_HEAD_SHA "$EVT_PR_HEAD_SHA"
+            set_env PR_LABELS "$EVT_PR_LABELS"
             if ${{github.event.action == 'assigned' || github.event.action == 'unassigned' }}
             then
-              echo "ASSIGNED_USER=${{ github.event.assignee.login }}" >> $GITHUB_ENV
+              set_env ASSIGNED_USER "$EVT_ASSIGNEE_LOGIN"
             elif ${{ github.event.action == 'labeled' || github.event.action == 'unlabeled' }}
-            then 
-              echo "ASSIGNED_LABEL=${{ github.event.label.name }}" >> $GITHUB_ENV
+            then
+              set_env ASSIGNED_LABEL "$EVT_LABEL_NAME"
             elif ${{ github.event.action == 'review_requested' || github.event.action == 'review_request_removed' }}
             then
-              echo "ASSIGNED_USER=${{ github.event.requested_reviewer.login }}" >> $GITHUB_ENV
+              set_env ASSIGNED_USER "$EVT_REQUESTED_REVIEWER_LOGIN"
             fi
             echo "message=${{inputs.pull-request-target-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'push' }}
           then
-            echo "COMMIT_URL=${{ github.event.head_commit.url }}" >> $GITHUB_ENV
-            echo "COMPARE_URL=${{ github.event.compare  }}" >> $GITHUB_ENV
+            set_env COMMIT_URL "$EVT_COMMIT_URL"
+            set_env COMPARE_URL "$EVT_COMPARE_URL"
             echo "message=${{inputs.push-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'registry_package' }}
           then
-            echo "REGISTRY_PACKAGE_NAME=${{ github.event.registry_package.name }}" >> $GITHUB_ENV
-            echo "REGISTRY_PACKAGE_VERSION=${{ github.event.registry_package.package_version.name }}" >> $GITHUB_ENV
-            echo "REGISTRY_PACKAGE_TYPE=${{github.event.registry_package.package_type }}" >> $GITHUB_ENV
-            echo "REGISTRY_PACKAGE_URL=${{github.event.registry_package.html_url }}" >> $GITHUB_ENV
+            set_env REGISTRY_PACKAGE_NAME "$EVT_REGISTRY_PACKAGE_NAME"
+            set_env REGISTRY_PACKAGE_VERSION "$EVT_REGISTRY_PACKAGE_VERSION"
+            set_env REGISTRY_PACKAGE_TYPE "$EVT_REGISTRY_PACKAGE_TYPE"
+            set_env REGISTRY_PACKAGE_URL "$EVT_REGISTRY_PACKAGE_URL"
             echo "message=${{inputs.registry-package-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'release' }}
           then
-            echo "RELEASE_NAME=${{ github.event.release.name }}" >> $GITHUB_ENV
-            echo "RELEASE_TAG=${{ github.event.release.tag_name }}" >> $GITHUB_ENV
-            echo "RELEASE_URL=${{ github.event.release.html_url }}" >> $GITHUB_ENV
+            set_env RELEASE_NAME "$EVT_RELEASE_NAME"
+            set_env RELEASE_TAG "$EVT_RELEASE_TAG"
+            set_env RELEASE_URL "$EVT_RELEASE_URL"
             echo "message=${{inputs.release-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'repository_dispatch' }}
           then
@@ -337,7 +391,7 @@ runs:
             echo "message=${{inputs.schedule-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'status' }}
           then
-            echo "STATUS=${{ github.event.state }}" >> $GITHUB_ENV
+            set_env STATUS "$EVT_STATUS_STATE"
             echo "message=${{inputs.status-message}}" >> $GITHUB_ENV
           elif ${{ github.event_name == 'watch' }}
           then
